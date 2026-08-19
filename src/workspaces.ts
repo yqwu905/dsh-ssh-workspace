@@ -7,9 +7,11 @@ export const inject = ['sshWorkspace', 'workspaceRegistry']
 
 /** Register configured remote directories through deterministic local anchors. */
 export async function apply(ctx: Context): Promise<void> {
-  for (const configured of ctx.sshWorkspace.config.workspaces) {
-    const remote = await ctx.sshWorkspace.requireRemoteDirectory(configured.path)
-    const anchor = await ctx.sshWorkspace.materializeAnchor(remote)
-    await ctx.workspaceRegistry.create(anchor, configured.title)
+  for (const server of ctx.sshWorkspace.listServers()) {
+    for (const configured of server.config.workspaces) {
+      const remote = await server.requireRemoteDirectory(configured.path)
+      const anchor = await server.materializeAnchor(remote)
+      await ctx.workspaceRegistry.create(anchor, configured.title)
+    }
   }
 }

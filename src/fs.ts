@@ -19,7 +19,8 @@ import type {
   FsWriteOutcome,
 } from '@deepseek-ai/dsh-fs'
 import type { Attributes, SFTPWrapper, Stats } from 'ssh2'
-import type {} from './index.js'
+import { decodeSshTarget, encodeSshTarget } from './index.js'
+import type { SshServerRuntime } from './index.js'
 import {
   sftpChmod,
   sftpCode,
@@ -173,15 +174,16 @@ export class SshFileSystem extends FileSystem {
     if (path.trim().length === 0) throw new FsError('file_path must be a non-empty string', 'FS_NOT_FOUND')
     let displayPath: string
     try {
-      displayPath = this.ctx.sshWorkspace.paths.toRemote(path, opts?.cwd)
-      const targetPath = await this.canonicalPath(await this.ctx.sshWorkspace.getSftp(), displayPath, opts?.signal)
-      if (!this.ctx.sshWorkspace.paths.containsRemote(targetPath)) {
+      const routed = this.ctx.sshWorkspace.resolvePath(path, opts?.cwd)
+      displayPath = routed.remotePath
+      const targetPath = await this.canonicalPath(await routed.server.getSftp(), displayPath, opts?.signal)
+      if (!routed.server.paths.containsRemote(targetPath)) {
         throw new FsError(
           `cannot resolve "${displayPath}": symbolic link escapes configured SSH root`,
           'FS_PERMISSION_DENIED',
         )
       }
-      return { targetKey: FsTargetKey(targetPath), displayPath }
+      return { targetKey: FsTargetKey(encodeSshTarget(routed.server.config.id, targetPath)), displayPath }
     } catch (error: unknown) {
       displayPath ??= path
       throw mapError(error, 'resolve', displayPath, opts?.signal)
@@ -189,7 +191,7 @@ export class SshFileSystem extends FileSystem {
   }
 
   override processPath(target: FsTarget): string {
-    return String(target.targetKey)
+    return this.target(target).remotePath
   }
 
   override fileUrl(target: FsTarget): string {
@@ -198,16 +200,20 @@ export class SshFileSystem extends FileSystem {
   }
 
   override contains(parent: FsTarget, child: FsTarget): boolean {
-    const rel = posix.relative(this.processPath(parent), this.processPath(child))
+    const left = this.target(parent)
+    const right = this.target(child)
+    if (left.server.config.id !== right.server.config.id) return false
+    const rel = posix.relative(left.remotePath, right.remotePath)
     return rel === '' || (rel !== '..' && !rel.startsWith('../') && !posix.isAbsolute(rel))
   }
 
   override async stat(target: FsTarget, signal?: AbortSignal): Promise<FsInfo | undefined> {
     assertNotAborted(signal, 'stat')
     try {
-      const attrs = await maybeStat(await this.ctx.sshWorkspace.getSftp(), this.processPath(target))
+      const routed = this.target(target)
+      const attrs = await maybeStat(await routed.server.getSftp(), routed.remotePath)
       assertNotAborted(signal, 'stat')
-      return attrs === undefined ? undefined : info(this.processPath(target), attrs)
+      return attrs === undefined ? undefined : info(String(target.targetKey), attrs)
     } catch (error: unknown) {
       throw mapError(error, 'stat', target.displayPath, signal)
     }
@@ -215,12 +221,13 @@ export class SshFileSystem extends FileSystem {
 
   override async lstat(path: string, opts?: { cwd?: string }, signal?: AbortSignal): Promise<FsPathInfo | undefined> {
     assertNotAborted(signal, 'lstat')
-    const remote = this.ctx.sshWorkspace.paths.toRemote(path, opts?.cwd)
+    const routed = this.ctx.sshWorkspace.resolvePath(path, opts?.cwd)
+    const remote = routed.remotePath
     try {
-      const attrs = await sftpLstat(await this.ctx.sshWorkspace.getSftp(), remote)
+      const attrs = await sftpLstat(await routed.server.getSftp(), remote)
       assertNotAborted(signal, 'lstat')
       return {
-        version: version(remote, attrs),
+        version: version(encodeSshTarget(routed.server.config.id, remote), attrs),
         type: attrs.isSymbolicLink() ? 'symlink' : attrs.isFile() ? 'file' : attrs.isDirectory() ? 'directory' : 'other',
         ...(attrs.isFile() ? { size: attrs.size } : {}),
       }
@@ -236,7 +243,8 @@ export class SshFileSystem extends FileSystem {
     if (current === undefined) throw new FsError(`cannot read "${target.displayPath}": not found`, 'FS_NOT_FOUND')
     if (current.type !== 'file') throw new FsError(`cannot read "${target.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
     try {
-      const bytes = await sftpReadFile(await this.ctx.sshWorkspace.getSftp(), this.processPath(target))
+      const routed = this.target(target)
+      const bytes = await sftpReadFile(await routed.server.getSftp(), routed.remotePath)
       assertNotAborted(signal, 'read')
       return decodeText(bytes, target.displayPath)
     } catch (error: unknown) {
@@ -251,7 +259,8 @@ export class SshFileSystem extends FileSystem {
     if (current.size !== undefined && current.size > maxBytes) {
       throw new FsError(`cannot read "${target.displayPath}": ${current.size} bytes exceeds the ${maxBytes}-byte limit`, 'FS_TOO_LARGE')
     }
-    const bytes = await sftpReadFile(await this.ctx.sshWorkspace.getSftp(), this.processPath(target))
+    const routed = this.target(target)
+    const bytes = await sftpReadFile(await routed.server.getSftp(), routed.remotePath)
     assertNotAborted(signal, 'read')
     if (bytes.length > maxBytes) {
       throw new FsError(`cannot read "${target.displayPath}": content exceeds the ${maxBytes}-byte limit`, 'FS_TOO_LARGE')
@@ -263,8 +272,9 @@ export class SshFileSystem extends FileSystem {
     const current = await this.stat(target, signal)
     if (current === undefined) throw new FsError(`cannot read "${target.displayPath}": not found`, 'FS_NOT_FOUND')
     if (current.type !== 'file') throw new FsError(`cannot read "${target.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
-    const sftp = await this.ctx.sshWorkspace.getSftp()
-    const stream = sftp.createReadStream(this.processPath(target)) as Readable
+    const routed = this.target(target)
+    const sftp = await routed.server.getSftp()
+    const stream = sftp.createReadStream(routed.remotePath) as Readable
     const displayPath = target.displayPath
     return {
       async *[Symbol.asyncIterator](): AsyncGenerator<string> {
@@ -306,21 +316,25 @@ export class SshFileSystem extends FileSystem {
     if (current === undefined) throw new FsError(`cannot list "${target.displayPath}": not found`, 'FS_NOT_FOUND')
     if (current.type !== 'directory') throw new FsError(`cannot list "${target.displayPath}": not a directory`, 'FS_NOT_DIRECTORY')
     try {
-      const sftp = await this.ctx.sshWorkspace.getSftp()
-      const rows = await sftpReadDir(sftp, this.processPath(target))
+      const routed = this.target(target)
+      const sftp = await routed.server.getSftp()
+      const rows = await sftpReadDir(sftp, routed.remotePath)
       const entries: FsDirEntry[] = []
       for (const row of rows.sort((left, right) => left.filename.localeCompare(right.filename))) {
         assertNotAborted(signal, 'list')
         const childDisplay = posix.join(target.displayPath, row.filename)
-        const childPath = await this.canonicalPath(sftp, posix.join(this.processPath(target), row.filename), signal)
+        const childPath = await this.canonicalPath(sftp, posix.join(routed.remotePath, row.filename), signal)
         const listedType = attributesType(row.attrs)
         const childAttrs: Attributes = listedType === 'symlink' ? await sftpStat(sftp, childPath) : row.attrs
         const childType = attributesType(childAttrs)
         entries.push({
           name: row.filename,
           type: childType === 'file' ? 'file' : childType === 'directory' ? 'directory' : 'other',
-          target: { targetKey: FsTargetKey(childPath), displayPath: childDisplay },
-          version: version(childPath, childAttrs),
+          target: {
+            targetKey: FsTargetKey(encodeSshTarget(routed.server.config.id, childPath)),
+            displayPath: childDisplay,
+          },
+          version: version(encodeSshTarget(routed.server.config.id, childPath), childAttrs),
           ...(childType === 'file' ? { size: childAttrs.size } : {}),
         })
       }
@@ -337,9 +351,10 @@ export class SshFileSystem extends FileSystem {
     signal?: AbortSignal,
     _sandboxPolicy?: unknown,
   ): Promise<FsWriteOutcome> {
-    return await this.withLock(this.processPath(target), async () => {
-      const sftp = await this.ctx.sshWorkspace.getSftp()
-      const path = this.processPath(target)
+    return await this.withLock(String(target.targetKey), async () => {
+      const routed = this.target(target)
+      const sftp = await routed.server.getSftp()
+      const path = routed.remotePath
       const existing = await maybeStat(sftp, path)
       if (existing !== undefined && !existing.isFile()) {
         throw new FsError(`cannot write "${target.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
@@ -348,7 +363,7 @@ export class SshFileSystem extends FileSystem {
         throw new FsError(`cannot write "${target.displayPath}": target already exists`, 'FS_NOT_OBSERVED')
       }
       if (expected?.kind === 'replaceIfVersion'
-        && (existing === undefined || version(path, existing) !== expected.version)) {
+        && (existing === undefined || version(String(target.targetKey), existing) !== expected.version)) {
         throw new FsError(`cannot write "${target.displayPath}": observed version is stale`, 'FS_STALE_VERSION')
       }
       assertNotAborted(signal, 'write')
@@ -356,7 +371,7 @@ export class SshFileSystem extends FileSystem {
       const next = await this.atomicWrite(sftp, path, content, existing, expected?.kind === 'createIfAbsent', signal)
       return {
         operation: existing === undefined ? 'create' : 'update',
-        version: version(path, next),
+        version: version(String(target.targetKey), next),
         before,
         after: normalizeLineEndings(content),
       }
@@ -370,13 +385,14 @@ export class SshFileSystem extends FileSystem {
     signal?: AbortSignal,
     _sandboxPolicy?: unknown,
   ): Promise<FsEditOutcome> {
-    return await this.withLock(this.processPath(target), async () => {
-      const sftp = await this.ctx.sshWorkspace.getSftp()
-      const path = this.processPath(target)
+    return await this.withLock(String(target.targetKey), async () => {
+      const routed = this.target(target)
+      const sftp = await routed.server.getSftp()
+      const path = routed.remotePath
       const attrs = await maybeStat(sftp, path)
       if (attrs === undefined) throw new FsError(`cannot edit "${target.displayPath}": not found`, 'FS_NOT_FOUND')
       if (!attrs.isFile()) throw new FsError(`cannot edit "${target.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
-      if (expected !== undefined && version(path, attrs) !== expected.version) {
+      if (expected !== undefined && version(String(target.targetKey), attrs) !== expected.version) {
         throw new FsError(`cannot edit "${target.displayPath}": observed version is stale`, 'FS_STALE_VERSION')
       }
       const raw = decodeText(await sftpReadFile(sftp, path), target.displayPath)
@@ -386,7 +402,7 @@ export class SshFileSystem extends FileSystem {
       assertNotAborted(signal, 'edit')
       const storage = crlf ? after.replaceAll('\n', '\r\n') : after
       const next = await this.atomicWrite(sftp, path, storage, attrs, false, signal)
-      return { version: version(path, next), before, after }
+      return { version: version(String(target.targetKey), next), before, after }
     })
   }
 
@@ -406,6 +422,11 @@ export class SshFileSystem extends FileSystem {
         current = parent
       }
     }
+  }
+
+  private target(target: FsTarget): { server: SshServerRuntime; remotePath: string } {
+    const decoded = decodeSshTarget(String(target.targetKey))
+    return { server: this.ctx.sshWorkspace.getServer(decoded.serverId), remotePath: decoded.remotePath }
   }
 
   private async diffBasis(sftp: SFTPWrapper, path: string, attrs: Stats, displayPath: string): Promise<string | null> {

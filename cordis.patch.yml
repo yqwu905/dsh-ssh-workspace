@@ -1,13 +1,15 @@
 # dsh-ssh-workspace bundle layer.
 #
-# The connection row is environment-backed so installing the bundle never puts
-# credentials in a profile manifest. A profile-level patch may restate this
-# row with literal non-secret values; see examples/cordis.patch.yml.
+# The UI writes the `ssh-workspace` settings namespace. Environment-backed
+# fields below remain as a headless/legacy base layer and never contain a
+# plaintext password; passwordRef values resolve through DSH credentials.
 
 - insert:
     - id: ssh-workspace-runtime
       name: 'dsh-ssh-workspace'
       config:
+        anchorRoot: !!js process.env.DSH_SSH_ANCHOR_ROOT
+        servers: !!js "process.env.DSH_SSH_SERVERS === undefined ? [] : JSON.parse(process.env.DSH_SSH_SERVERS)"
         host: !!js process.env.DSH_SSH_HOST
         port: !!js Number(process.env.DSH_SSH_PORT ?? 22)
         username: !!js process.env.DSH_SSH_USER
@@ -42,13 +44,13 @@
   name: '@deepseek-ai/dsh-sandbox-policy'
   config:
     mode: danger-full-access
-    workspaceRoot: !!js process.env.DSH_SSH_ROOT
+    workspaceRoot: !!js process.env.DSH_SSH_ANCHOR_ROOT ?? process.cwd()
 
 - id: bash-sandbox
   name: '@deepseek-ai/dsh-bash-sandbox'
   disabled: false
   config:
-    cwd: !!js process.env.DSH_SSH_ROOT
+    cwd: !!js process.env.DSH_SSH_ANCHOR_ROOT ?? process.cwd()
     timeoutMs: 60000
 
 - id: approval

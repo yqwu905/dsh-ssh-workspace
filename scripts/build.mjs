@@ -1,3 +1,4 @@
+import { writeFile } from 'node:fs/promises'
 import { build } from 'esbuild'
 
 await build({
@@ -35,3 +36,25 @@ await build({
     './crypto/build/Release/sshcrypto.node',
   ],
 })
+
+const client = await build({
+  entryPoints: ['src/client/index.tsx'],
+  bundle: true,
+  platform: 'browser',
+  format: 'cjs',
+  target: 'es2022',
+  jsx: 'automatic',
+  write: false,
+  legalComments: 'none',
+  external: ['react', 'react/jsx-runtime', '@deepseek-ai/*'],
+})
+const body = client.outputFiles[0]?.text
+if (body === undefined) throw new Error('client bundle produced no JavaScript output')
+const wrapped = [
+  'window.__ModuleLoader__.load({ id: "dsh-ssh-workspace", factory: (require) => {',
+  'var module = { exports: {} }; var exports = module.exports;',
+  body,
+  'return module.exports; } });',
+  '',
+].join('\n')
+await writeFile('lib/client.js', wrapped)
