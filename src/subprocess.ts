@@ -1,5 +1,4 @@
 import { PassThrough, type Readable, type Writable } from 'node:stream'
-import { posix } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import {
   SubprocessRuntime,
@@ -18,9 +17,9 @@ import type {
   SubprocessTerminalSpawnSpec,
 } from '@deepseek-ai/dsh-subprocess'
 import type { ClientChannel } from 'ssh2'
-import type {} from './index.js'
+import type { SshServerRuntime } from './index.js'
 import { TailOutputReader } from './output.js'
-import { buildRemoteCommand, quoteShell, waitForAbort } from './ssh-utils.js'
+import { buildRemoteCommand, waitForAbort } from './ssh-utils.js'
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -94,7 +93,7 @@ class SshSubprocessHandle implements SubprocessHandle {
   private readonly onAbort: (() => void) | undefined
 
   constructor(
-    private readonly ctx: Context,
+    private readonly server: SshServerRuntime,
     private readonly spec: SubprocessSpawnSpec,
     remoteCwd: string,
   ) {
@@ -134,10 +133,11 @@ class SshSubprocessHandle implements SubprocessHandle {
 
   private async start(remoteCwd: string): Promise<void> {
     try {
-      const canonicalCwd = await this.ctx.sshWorkspace.requireRemoteDirectory(remoteCwd)
-      const client = await this.ctx.sshWorkspace.getClient()
+      const canonicalCwd = await this.server.requireRemoteDirectory(remoteCwd)
+      const client = await this.server.getClient()
       if (this.settled) return
-      const command = buildRemoteCommand(this.spec.argv, canonicalCwd, this.spec.env)
+      const argv = await this.server.adaptArgv(this.spec.argv, this.spec.signal)
+      const command = buildRemoteCommand(argv, canonicalCwd, this.spec.env)
       client.exec(command, (error: Error | undefined, channel: ClientChannel) => {
         if (error !== undefined) {
           this.fail(error)
@@ -214,7 +214,7 @@ class SshTerminalHandle implements SubprocessTerminalHandle {
   private readonly onAbort: (() => void) | undefined
 
   constructor(
-    private readonly ctx: Context,
+    private readonly server: SshServerRuntime,
     private readonly spec: SubprocessTerminalSpawnSpec,
     remoteCwd: string,
   ) {
@@ -269,11 +269,12 @@ class SshTerminalHandle implements SubprocessTerminalHandle {
   private async start(remoteCwd: string): Promise<void> {
     try {
       this.spec.signal?.throwIfAborted()
-      const canonicalCwd = await this.ctx.sshWorkspace.requireRemoteDirectory(remoteCwd)
+      const canonicalCwd = await this.server.requireRemoteDirectory(remoteCwd)
       this.spec.signal?.throwIfAborted()
-      const client = await this.ctx.sshWorkspace.getClient()
+      const client = await this.server.getClient()
       this.spec.signal?.throwIfAborted()
-      const command = buildRemoteCommand(this.spec.argv, canonicalCwd, this.spec.env)
+      const argv = await this.server.adaptArgv(this.spec.argv, this.spec.signal)
+      const command = buildRemoteCommand(argv, canonicalCwd, this.spec.env)
       client.exec(command, {
         pty: {
           term: 'xterm-256color',
@@ -350,24 +351,7 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
     env?: Readonly<Record<string, string>>,
     signal?: AbortSignal,
   ): Promise<string> {
-    if (command.length === 0) throw new Error('dsh-ssh-workspace: executable must be non-empty')
-    signal?.throwIfAborted()
-    if (!posix.isAbsolute(command) && command.includes('/')) {
-      throw new Error(`dsh-ssh-workspace: command ${JSON.stringify(command)} is a relative path`)
-    }
-    const pathPrefix = env?.PATH === undefined ? '' : `PATH=${quoteShell(env.PATH)} `
-    const probe = posix.isAbsolute(command)
-      ? `test -f ${quoteShell(command)} && test -x ${quoteShell(command)} && printf '%s\\n' ${quoteShell(command)}`
-      : `${pathPrefix}command -v ${quoteShell(command)}`
-    const result = await this.ctx.sshWorkspace.execControl(probe, signal, 16_384)
-    if (result.exitCode !== 0) {
-      throw new Error(`dsh-ssh-workspace: command ${JSON.stringify(command)} was not found on remote PATH`)
-    }
-    const resolved = result.stdout.trim().split('\n')[0]
-    if (resolved === undefined || !posix.isAbsolute(resolved)) {
-      throw new Error(`dsh-ssh-workspace: command ${JSON.stringify(command)} did not resolve to an absolute remote path`)
-    }
-    return resolved
+    return await this.ctx.sshWorkspace.defaultServer().resolveExecutable(command, env, signal)
   }
 
   override spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
@@ -376,8 +360,8 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
       throw new Error('dsh-ssh-workspace: argv must contain a non-empty program')
     }
     spec.signal?.throwIfAborted()
-    const remoteCwd = this.ctx.sshWorkspace.paths.toRemote(spec.cwd)
-    const handle = new SshSubprocessHandle(this.ctx, spec, remoteCwd)
+    const routed = this.ctx.sshWorkspace.resolvePath(spec.cwd)
+    const handle = new SshSubprocessHandle(routed.server, spec, routed.remotePath)
     this.live.add(handle)
     void handle.done.then(
       () => this.live.delete(handle),
@@ -392,8 +376,8 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
       throw new Error('dsh-ssh-workspace: terminal argv must contain a non-empty program')
     }
     spec.signal?.throwIfAborted()
-    const remoteCwd = this.ctx.sshWorkspace.paths.toRemote(spec.cwd)
-    const handle = new SshTerminalHandle(this.ctx, spec, remoteCwd)
+    const routed = this.ctx.sshWorkspace.resolvePath(spec.cwd)
+    const handle = new SshTerminalHandle(routed.server, spec, routed.remotePath)
     this.terminals.add(handle)
     void handle.done.then(
       () => this.terminals.delete(handle),

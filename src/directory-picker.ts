@@ -10,7 +10,7 @@ import type {
   DirectoryListing,
   DirectoryPickerCapability,
 } from '@deepseek-ai/dsh-host-directory-picker'
-import type {} from './index.js'
+import type { SshServerRuntime } from './index.js'
 import { sftpMkdir, sftpReadDir, sftpRealpath, sftpStat } from './sftp.js'
 
 const S_IFMT = 0o170000
@@ -54,11 +54,26 @@ export class SshDirectoryPicker extends DirectoryPicker {
 
   private async list(path?: string, signal?: AbortSignal): Promise<DirectoryListing> {
     signal?.throwIfAborted()
+    if (path === undefined || path === this.ctx.sshWorkspace.anchorRoot) {
+      const entries: DirectoryEntry[] = this.ctx.sshWorkspace.listServers().map(server => ({
+        name: server.config.name,
+        path: server.paths.anchorRoot,
+        hidden: false,
+      }))
+      return {
+        path: this.ctx.sshWorkspace.anchorRoot,
+        home: this.ctx.sshWorkspace.anchorRoot,
+        crumbs: [{ name: 'SSH servers', path: this.ctx.sshWorkspace.anchorRoot, hidden: false }],
+        entries,
+        truncated: false,
+      }
+    }
     let remote: string
+    let server: SshServerRuntime
     try {
-      remote = path === undefined
-        ? this.ctx.sshWorkspace.paths.remoteRoot
-        : this.ctx.sshWorkspace.paths.toRemote(path)
+      const routed = this.ctx.sshWorkspace.resolveAnchor(path)
+      server = routed.server
+      remote = routed.remotePath
     } catch (error: unknown) {
       throw new DirectoryPickerError(
         'directory-unreadable',
@@ -67,9 +82,9 @@ export class SshDirectoryPicker extends DirectoryPicker {
       )
     }
     try {
-      const sftp = await this.ctx.sshWorkspace.getSftp()
+      const sftp = await server.getSftp()
       const canonical = await sftpRealpath(sftp, remote)
-      if (!this.ctx.sshWorkspace.paths.containsRemote(canonical)) {
+      if (!server.paths.containsRemote(canonical)) {
         throw new Error(`path resolves outside configured root: ${remote} -> ${canonical}`)
       }
       const targetInfo = await sftpStat(sftp, remote)
@@ -85,7 +100,7 @@ export class SshDirectoryPicker extends DirectoryPicker {
         if (kind === S_IFLNK) {
           try {
             const canonicalChild = await sftpRealpath(sftp, child)
-            isDirectory = this.ctx.sshWorkspace.paths.containsRemote(canonicalChild)
+            isDirectory = server.paths.containsRemote(canonicalChild)
               && (await sftpStat(sftp, canonicalChild)).isDirectory()
           } catch {
             isDirectory = false
@@ -95,19 +110,19 @@ export class SshDirectoryPicker extends DirectoryPicker {
       }
       const truncated = directories.length > this.config.maxEntries
       if (truncated) directories.length = this.config.maxEntries
-      const targetAnchor = await this.ctx.sshWorkspace.materializeAnchor(remote)
+      const targetAnchor = await server.materializeAnchor(remote)
       const entries: DirectoryEntry[] = []
       for (const entry of directories) {
         entries.push({
           name: entry.name,
-          path: await this.ctx.sshWorkspace.materializeAnchor(entry.remote),
+          path: await server.materializeAnchor(entry.remote),
           hidden: entry.name.startsWith('.'),
         })
       }
       return {
         path: targetAnchor,
-        home: this.ctx.sshWorkspace.paths.anchorRoot,
-        crumbs: await this.crumbs(remote),
+        home: this.ctx.sshWorkspace.anchorRoot,
+        crumbs: await this.crumbs(server, remote),
         entries,
         truncated,
       }
@@ -115,7 +130,7 @@ export class SshDirectoryPicker extends DirectoryPicker {
       if (signal?.aborted === true) throw signal.reason
       throw new DirectoryPickerError(
         'directory-unreadable',
-        path ?? this.ctx.sshWorkspace.paths.anchorRoot,
+        path,
         `cannot list remote directory "${remote}": ${error instanceof Error ? error.message : String(error)}`,
       )
     }
@@ -127,10 +142,11 @@ export class SshDirectoryPicker extends DirectoryPicker {
     }
     let remote: string
     try {
-      const parent = await this.ctx.sshWorkspace.requireRemoteDirectory(path)
+      const routed = this.ctx.sshWorkspace.resolveAnchor(path)
+      const parent = await routed.server.requireRemoteDirectory(routed.remotePath)
       remote = posix.join(parent, name)
-      await sftpMkdir(await this.ctx.sshWorkspace.getSftp(), remote)
-      return await this.ctx.sshWorkspace.materializeAnchor(remote)
+      await sftpMkdir(await routed.server.getSftp(), remote)
+      return await routed.server.materializeAnchor(remote)
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error)
       const code = /exist/iu.test(message) ? 'directory-exists' : 'directory-create-failed'
@@ -138,19 +154,23 @@ export class SshDirectoryPicker extends DirectoryPicker {
     }
   }
 
-  private async crumbs(remote: string): Promise<DirectoryEntry[]> {
-    const root = this.ctx.sshWorkspace.paths.remoteRoot
+  private async crumbs(server: SshServerRuntime, remote: string): Promise<DirectoryEntry[]> {
+    const root = server.paths.remoteRoot
     const rel = posix.relative(root, remote)
     const segments = rel.length === 0 ? [] : rel.split('/')
     const rows: DirectoryEntry[] = [{
-      name: posix.basename(root) || root,
-      path: await this.ctx.sshWorkspace.materializeAnchor(root),
+      name: 'SSH servers',
+      path: this.ctx.sshWorkspace.anchorRoot,
+      hidden: false,
+    }, {
+      name: server.config.name,
+      path: await server.materializeAnchor(root),
       hidden: false,
     }]
     let current = root
     for (const segment of segments) {
       current = posix.join(current, segment)
-      rows.push({ name: segment, path: await this.ctx.sshWorkspace.materializeAnchor(current), hidden: false })
+      rows.push({ name: segment, path: await server.materializeAnchor(current), hidden: false })
     }
     return rows
   }
