@@ -1,0 +1,93 @@
+{
+  "name": "dsh-ssh-workspace",
+  "version": "0.1.0",
+  "description": "SSH execution-world and remote workspace bundle for DeepSeek Harness",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./fs": {
+      "types": "./lib/fs.d.ts",
+      "default": "./lib/fs.js"
+    },
+    "./subprocess": {
+      "types": "./lib/subprocess.d.ts",
+      "default": "./lib/subprocess.js"
+    },
+    "./directory-picker": {
+      "types": "./lib/directory-picker.d.ts",
+      "default": "./lib/directory-picker.js"
+    },
+    "./workspaces": {
+      "types": "./lib/workspaces.d.ts",
+      "default": "./lib/workspaces.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/**/*.js",
+    "lib/**/*.d.ts",
+    "cordis.patch.yml",
+    "examples",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "npm run clean && npm run build:types && npm run build:js",
+    "build:types": "tsc -p tsconfig.build.json",
+    "build:js": "node scripts/build.mjs",
+    "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
+    "prepack": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:bundle": "npm run build && node scripts/smoke-bundle.mjs",
+    "test:loopback": "DSH_SSH_LOOPBACK=1 vitest run tests/loopback-ssh.test.ts",
+    "test:watch": "vitest",
+    "pack:check": "npm pack --dry-run --cache .npm-cache"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-fs": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-home-paths": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-host-directory-picker": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-subprocess": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-workspace": "^0.1.0-rc.7",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-fs": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-home-paths": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-host-directory-picker": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-subprocess": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-workspace": "0.1.0-rc.7",
+    "@deepseek-ai/schemastery": "3.18.1",
+    "@types/node": "^24.0.0",
+    "@types/ssh2": "^1.15.5",
+    "esbuild": "^0.28.2",
+    "ssh2": "^1.17.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "ssh",
+    "remote-workspace",
+    "cordis"
+  ]
+}

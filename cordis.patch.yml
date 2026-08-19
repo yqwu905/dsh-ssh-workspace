@@ -1,0 +1,104 @@
+# dsh-ssh-workspace bundle layer.
+#
+# The connection row is environment-backed so installing the bundle never puts
+# credentials in a profile manifest. A profile-level patch may restate this
+# row with literal non-secret values; see examples/cordis.patch.yml.
+
+- insert:
+    - id: ssh-workspace-runtime
+      name: 'dsh-ssh-workspace'
+      config:
+        host: !!js process.env.DSH_SSH_HOST
+        port: !!js Number(process.env.DSH_SSH_PORT ?? 22)
+        username: !!js process.env.DSH_SSH_USER
+        root: !!js process.env.DSH_SSH_ROOT
+        privateKeyPath: !!js process.env.DSH_SSH_PRIVATE_KEY
+        passwordEnv: !!js "process.env.DSH_SSH_PASSWORD === undefined ? undefined : 'DSH_SSH_PASSWORD'"
+        passphraseEnv: !!js "process.env.DSH_SSH_PASSPHRASE === undefined ? undefined : 'DSH_SSH_PASSPHRASE'"
+        agent: !!js process.env.SSH_AUTH_SOCK
+        hostKeySha256: !!js process.env.DSH_SSH_HOST_KEY_SHA256
+        acceptUnknownHostKey: !!js process.env.DSH_SSH_ACCEPT_UNKNOWN_HOST_KEY === '1'
+        workspaces: !!js JSON.parse(process.env.DSH_SSH_WORKSPACES ?? '[]')
+
+    - id: ssh-workspace-registrar
+      name: 'dsh-ssh-workspace/workspaces'
+
+# Disable the original providers by their guarded identity, then insert SSH
+# providers under new row ids. Cordis refuses an in-place name change.
+- id: subprocess
+  name: '@deepseek-ai/dsh-subprocess-local'
+  disabled: true
+
+- id: fs-sandbox
+  name: '@deepseek-ai/dsh-fs-sandbox'
+  disabled: true
+
+# Local sandbox runners cannot confine a remote process. Retain the sandboxing
+# Bash provider only as the shell capability wrapper, but pin its deployment
+# mode to danger-full-access. In that mode it delegates the original argv to
+# ctx.subprocess without invoking the host sandbox, while still publishing the
+# sandboxMode fact required by DSH's permission preset service.
+- id: sandbox-policy
+  name: '@deepseek-ai/dsh-sandbox-policy'
+  config:
+    mode: danger-full-access
+    workspaceRoot: !!js process.env.DSH_SSH_ROOT
+
+- id: bash-sandbox
+  name: '@deepseek-ai/dsh-bash-sandbox'
+  disabled: false
+  config:
+    cwd: !!js process.env.DSH_SSH_ROOT
+    timeoutMs: 60000
+
+- id: approval
+  name: '@deepseek-ai/dsh-user-approval'
+  config:
+    policy: never
+
+- id: permission
+  name: '@deepseek-ai/dsh-permission-presets'
+  config:
+    defaultPreset: danger-full-access
+    presets:
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+        name: SSH user authority
+        description: Commands run with the configured SSH user's server-side authority.
+
+- insert:
+    - id: subprocess-ssh
+      name: 'dsh-ssh-workspace/subprocess'
+
+    - id: fs-ssh
+      name: 'dsh-ssh-workspace/fs'
+
+- id: pwsh-sandbox
+  disabled: true
+
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: false
+
+- id: tool-pwsh
+  disabled: true
+
+# The Web bundle contributes this guarded row. It is absent in a base-only
+# profile (which may log one harmless "entry not found" patch diagnostic).
+- id: directory-picker
+  name: '@deepseek-ai/dsh-host-directory-picker-auto'
+  disabled: true
+
+- insert:
+    - id: directory-picker-ssh
+      name: 'dsh-ssh-workspace/directory-picker'
+      config:
+        maxEntries: 1000
+
+    # The adaptive DSH picker normally mounts its Host backend and matching
+    # Client surface as a pair. Because this bundle replaces only the backend
+    # with the SSH implementation, mount the browse surface explicitly so the
+    # Web UI can render and drive remote directory navigation.
+    - id: directory-picker-ssh-ui
+      name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
