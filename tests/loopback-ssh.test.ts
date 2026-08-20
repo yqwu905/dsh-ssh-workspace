@@ -66,6 +66,7 @@ describe('loopback SSH transport', () => {
 
     vi.stubEnv('DSH_SSH_LOOPBACK_PASSWORD', 'secret')
     const anchorRoot = await mkdtemp(join(tmpdir(), 'dsh-ssh-loopback-anchor-'))
+    const localRoot = await mkdtemp(join(tmpdir(), 'dsh-ssh-loopback-local-'))
     const ctx = new Context()
     const runtimeFiber = await ctx.plugin(SshWorkspaceRuntime, {
       host: '127.0.0.1',
@@ -82,13 +83,18 @@ describe('loopback SSH transport', () => {
     const subprocess = ctx.subprocess
 
     try {
-      const remoteTmp = await ctx.fs.resolve('.', { cwd: '/tmp' })
-      expect(ctx.fs.processPath(remoteTmp)).toBe('/tmp')
-      await expect(ctx.fs.stat(remoteTmp)).resolves.toMatchObject({ type: 'directory' })
+      const remoteRoot = await ctx.sshWorkspace.defaultServer().materializeAnchor('/tmp')
+      const remoteTarget = await ctx.fs.resolve('.', { cwd: remoteRoot })
+      expect(ctx.fs.processPath(remoteTarget)).toBe('/tmp')
+      await expect(ctx.fs.stat(remoteTarget)).resolves.toMatchObject({ type: 'directory' })
+
+      const localTarget = await ctx.fs.resolve('.', { cwd: localRoot })
+      expect(ctx.fs.processPath(localTarget)).toBe(localRoot)
+      await expect(ctx.fs.stat(localTarget)).resolves.toMatchObject({ type: 'directory' })
 
       const handle = subprocess.spawn({
         argv: ['/bin/sh', '-c', 'IFS= read -r line; printf "remote:%s" "$line"'],
-        cwd: '/tmp',
+        cwd: remoteRoot,
         stdio: {
           stdin: { data: 'hello over ssh\n' },
           stdout: { maxBytes: 1024 },
@@ -102,12 +108,26 @@ describe('loopback SSH transport', () => {
         lossy: false,
       })
       expect(handle.collected.stderr?.readFrom(0).text).toBe('')
+
+      const localHandle = subprocess.spawn({
+        argv: [process.execPath, '-e', 'process.stdout.write(`local:${process.cwd()}`)'],
+        cwd: localRoot,
+        stdio: {
+          stdin: 'ignore',
+          stdout: { maxBytes: 1024 },
+          stderr: { maxBytes: 1024 },
+        },
+        graceMs: 1000,
+      })
+      await expect(localHandle.done).resolves.toMatchObject({ exitCode: 0, signal: null })
+      expect(localHandle.collected.stdout?.readFrom(0).text).toBe(`local:${localRoot}`)
     } finally {
       await processFiber.dispose()
       await fsFiber.dispose()
       await runtimeFiber.dispose()
       await new Promise<void>(resolveClose => server.close(() => resolveClose()))
       await rm(anchorRoot, { recursive: true, force: true })
+      await rm(localRoot, { recursive: true, force: true })
       vi.unstubAllEnvs()
     }
   }, 15_000)

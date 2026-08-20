@@ -3,7 +3,6 @@ import { posix } from 'node:path'
 import type { Readable } from 'node:stream'
 import type { Context } from '@deepseek-ai/cordis'
 import {
-  FileSystem,
   FsError,
   FsTargetKey,
   FsVersion,
@@ -18,6 +17,7 @@ import type {
   FsWriteIntent,
   FsWriteOutcome,
 } from '@deepseek-ai/dsh-fs'
+import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import type { Attributes, SFTPWrapper, Stats } from 'ssh2'
 import { decodeSshTarget, encodeSshTarget } from './index.js'
 import type { SshServerRuntime } from './index.js'
@@ -163,18 +163,19 @@ async function mkdirp(sftp: SFTPWrapper, path: string): Promise<void> {
   for (const directory of missing.reverse()) await sftpMkdir(sftp, directory)
 }
 
-/** SFTP filesystem provider in the execution world owned by ctx.sshWorkspace. */
-export class SshFileSystem extends FileSystem {
+/** Route SSH anchor targets through SFTP and every other target through the host filesystem. */
+export class SshFileSystem extends LocalFileSystem {
   static inject = ['sshWorkspace']
 
-  private readonly locks = new Map<string, Promise<unknown>>()
+  private readonly remoteLocks = new Map<string, Promise<unknown>>()
 
   override async resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FsTarget> {
     assertNotAborted(opts?.signal, 'resolve')
     if (path.trim().length === 0) throw new FsError('file_path must be a non-empty string', 'FS_NOT_FOUND')
+    const routed = this.ctx.sshWorkspace.resolveAnchoredPath(path, opts?.cwd)
+    if (routed === undefined) return await super.resolve(path, opts)
     let displayPath: string
     try {
-      const routed = this.ctx.sshWorkspace.resolvePath(path, opts?.cwd)
       displayPath = routed.remotePath
       const targetPath = await this.canonicalPath(await routed.server.getSftp(), displayPath, opts?.signal)
       if (!routed.server.paths.containsRemote(targetPath)) {
@@ -191,26 +192,31 @@ export class SshFileSystem extends FileSystem {
   }
 
   override processPath(target: FsTarget): string {
-    return this.target(target).remotePath
+    return this.remoteTarget(target)?.remotePath ?? super.processPath(target)
   }
 
   override fileUrl(target: FsTarget): string {
-    const path = this.processPath(target)
+    const remote = this.remoteTarget(target)
+    if (remote === undefined) return super.fileUrl(target)
+    const path = remote.remotePath
     return `file://${path.split('/').map(segment => encodeURIComponent(segment)).join('/')}`
   }
 
   override contains(parent: FsTarget, child: FsTarget): boolean {
-    const left = this.target(parent)
-    const right = this.target(child)
+    const left = this.remoteTarget(parent)
+    const right = this.remoteTarget(child)
+    if (left === undefined && right === undefined) return super.contains(parent, child)
+    if (left === undefined || right === undefined) return false
     if (left.server.config.id !== right.server.config.id) return false
     const rel = posix.relative(left.remotePath, right.remotePath)
     return rel === '' || (rel !== '..' && !rel.startsWith('../') && !posix.isAbsolute(rel))
   }
 
   override async stat(target: FsTarget, signal?: AbortSignal): Promise<FsInfo | undefined> {
+    const routed = this.remoteTarget(target)
+    if (routed === undefined) return await super.stat(target, signal)
     assertNotAborted(signal, 'stat')
     try {
-      const routed = this.target(target)
       const attrs = await maybeStat(await routed.server.getSftp(), routed.remotePath)
       assertNotAborted(signal, 'stat')
       return attrs === undefined ? undefined : info(String(target.targetKey), attrs)
@@ -220,8 +226,9 @@ export class SshFileSystem extends FileSystem {
   }
 
   override async lstat(path: string, opts?: { cwd?: string }, signal?: AbortSignal): Promise<FsPathInfo | undefined> {
+    const routed = this.ctx.sshWorkspace.resolveAnchoredPath(path, opts?.cwd)
+    if (routed === undefined) return await super.lstat(path, opts, signal)
     assertNotAborted(signal, 'lstat')
-    const routed = this.ctx.sshWorkspace.resolvePath(path, opts?.cwd)
     const remote = routed.remotePath
     try {
       const attrs = await sftpLstat(await routed.server.getSftp(), remote)
@@ -238,12 +245,13 @@ export class SshFileSystem extends FileSystem {
   }
 
   override async readText(target: FsTarget, signal?: AbortSignal): Promise<string> {
+    const routed = this.remoteTarget(target)
+    if (routed === undefined) return await super.readText(target, signal)
     assertNotAborted(signal, 'read')
     const current = await this.stat(target, signal)
     if (current === undefined) throw new FsError(`cannot read "${target.displayPath}": not found`, 'FS_NOT_FOUND')
     if (current.type !== 'file') throw new FsError(`cannot read "${target.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
     try {
-      const routed = this.target(target)
       const bytes = await sftpReadFile(await routed.server.getSftp(), routed.remotePath)
       assertNotAborted(signal, 'read')
       return decodeText(bytes, target.displayPath)
@@ -253,13 +261,14 @@ export class SshFileSystem extends FileSystem {
   }
 
   override async readBytes(target: FsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array> {
+    const routed = this.remoteTarget(target)
+    if (routed === undefined) return await super.readBytes(target, signal, maxBytes)
     const current = await this.stat(target, signal)
     if (current === undefined) throw new FsError(`cannot read "${target.displayPath}": not found`, 'FS_NOT_FOUND')
     if (current.type !== 'file') throw new FsError(`cannot read "${target.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
     if (current.size !== undefined && current.size > maxBytes) {
       throw new FsError(`cannot read "${target.displayPath}": ${current.size} bytes exceeds the ${maxBytes}-byte limit`, 'FS_TOO_LARGE')
     }
-    const routed = this.target(target)
     const bytes = await sftpReadFile(await routed.server.getSftp(), routed.remotePath)
     assertNotAborted(signal, 'read')
     if (bytes.length > maxBytes) {
@@ -269,10 +278,11 @@ export class SshFileSystem extends FileSystem {
   }
 
   override async streamText(target: FsTarget, signal?: AbortSignal): Promise<AsyncIterable<string>> {
+    const routed = this.remoteTarget(target)
+    if (routed === undefined) return await super.streamText(target, signal)
     const current = await this.stat(target, signal)
     if (current === undefined) throw new FsError(`cannot read "${target.displayPath}": not found`, 'FS_NOT_FOUND')
     if (current.type !== 'file') throw new FsError(`cannot read "${target.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
-    const routed = this.target(target)
     const sftp = await routed.server.getSftp()
     const stream = sftp.createReadStream(routed.remotePath) as Readable
     const displayPath = target.displayPath
@@ -312,11 +322,12 @@ export class SshFileSystem extends FileSystem {
   }
 
   override async listDir(target: FsTarget, signal?: AbortSignal): Promise<FsDirEntry[]> {
+    const routed = this.remoteTarget(target)
+    if (routed === undefined) return await super.listDir(target, signal)
     const current = await this.stat(target, signal)
     if (current === undefined) throw new FsError(`cannot list "${target.displayPath}": not found`, 'FS_NOT_FOUND')
     if (current.type !== 'directory') throw new FsError(`cannot list "${target.displayPath}": not a directory`, 'FS_NOT_DIRECTORY')
     try {
-      const routed = this.target(target)
       const sftp = await routed.server.getSftp()
       const rows = await sftpReadDir(sftp, routed.remotePath)
       const entries: FsDirEntry[] = []
@@ -351,8 +362,9 @@ export class SshFileSystem extends FileSystem {
     signal?: AbortSignal,
     _sandboxPolicy?: unknown,
   ): Promise<FsWriteOutcome> {
-    return await this.withLock(String(target.targetKey), async () => {
-      const routed = this.target(target)
+    const routed = this.remoteTarget(target)
+    if (routed === undefined) return await super.writeText(target, content, expected, signal)
+    return await this.withRemoteLock(String(target.targetKey), async () => {
       const sftp = await routed.server.getSftp()
       const path = routed.remotePath
       const existing = await maybeStat(sftp, path)
@@ -385,8 +397,9 @@ export class SshFileSystem extends FileSystem {
     signal?: AbortSignal,
     _sandboxPolicy?: unknown,
   ): Promise<FsEditOutcome> {
-    return await this.withLock(String(target.targetKey), async () => {
-      const routed = this.target(target)
+    const routed = this.remoteTarget(target)
+    if (routed === undefined) return await super.editText(target, edit, expected, signal)
+    return await this.withRemoteLock(String(target.targetKey), async () => {
       const sftp = await routed.server.getSftp()
       const path = routed.remotePath
       const attrs = await maybeStat(sftp, path)
@@ -424,8 +437,10 @@ export class SshFileSystem extends FileSystem {
     }
   }
 
-  private target(target: FsTarget): { server: SshServerRuntime; remotePath: string } {
-    const decoded = decodeSshTarget(String(target.targetKey))
+  private remoteTarget(target: FsTarget): { server: SshServerRuntime; remotePath: string } | undefined {
+    const key = String(target.targetKey)
+    if (!key.startsWith('dsh-ssh:')) return undefined
+    const decoded = decodeSshTarget(key)
     return { server: this.ctx.sshWorkspace.getServer(decoded.serverId), remotePath: decoded.remotePath }
   }
 
@@ -483,18 +498,18 @@ export class SshFileSystem extends FileSystem {
     }
   }
 
-  private async withLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
-    const predecessor = this.locks.get(key) ?? Promise.resolve()
+  private async withRemoteLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const predecessor = this.remoteLocks.get(key) ?? Promise.resolve()
     let release!: () => void
     const slot = new Promise<void>(resolveSlot => { release = resolveSlot })
     const tail = predecessor.catch(() => {}).then(() => slot)
-    this.locks.set(key, tail)
+    this.remoteLocks.set(key, tail)
     await predecessor.catch(() => {})
     try {
       return await operation()
     } finally {
       release()
-      if (this.locks.get(key) === tail) this.locks.delete(key)
+      if (this.remoteLocks.get(key) === tail) this.remoteLocks.delete(key)
     }
   }
 }

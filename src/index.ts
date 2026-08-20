@@ -1,7 +1,7 @@
 import { mkdirSync, realpathSync } from 'node:fs'
 import { access, mkdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { posix } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
@@ -640,13 +640,27 @@ export class SshWorkspaceRuntime extends Service {
     return server
   }
 
+  /** Resolve only paths explicitly routed by an SSH workspace anchor. */
+  resolveAnchoredPath(path: string, cwd?: string): ResolvedSshPath | undefined {
+    const servers = this.listServers()
+    const pathServer = isAbsolute(path)
+      ? servers.find(server => server.paths.containsAnchor(path))
+      : undefined
+    if (pathServer !== undefined) {
+      return { server: pathServer, remotePath: pathServer.paths.toRemote(path) }
+    }
+    const cwdServer = cwd !== undefined && isAbsolute(cwd)
+      ? servers.find(server => server.paths.containsAnchor(cwd))
+      : undefined
+    if (cwdServer === undefined) return undefined
+    return { server: cwdServer, remotePath: cwdServer.paths.toRemote(path, cwd) }
+  }
+
   resolvePath(path: string, cwd?: string): ResolvedSshPath {
     if (path.trim().length === 0) throw new Error('dsh-ssh-workspace: path must be non-empty')
+    const anchored = this.resolveAnchoredPath(path, cwd)
+    if (anchored !== undefined) return anchored
     const servers = this.listServers()
-    const cwdServer = cwd === undefined ? undefined : servers.find(server => server.paths.containsAnchor(cwd))
-    const pathServer = servers.find(server => server.paths.containsAnchor(path))
-    if (pathServer !== undefined) return { server: pathServer, remotePath: pathServer.paths.toRemote(path) }
-    if (cwdServer !== undefined) return { server: cwdServer, remotePath: cwdServer.paths.toRemote(path, cwd) }
     if (posix.isAbsolute(path)) {
       const matches = servers.filter(server => server.paths.containsRemote(path))
       if (matches.length === 1 && matches[0] !== undefined) {
