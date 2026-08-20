@@ -1,6 +1,6 @@
 # dsh-ssh-workspace
 
-An SSH remote-workspace bundle for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). It replaces `ctx.fs` and `ctx.subprocess` together, so existing Agent tools operate in the matching server's remote execution world without tool-specific forks.
+A mixed local/SSH workspace bundle for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). It installs routing `ctx.fs`, `ctx.subprocess`, and directory-picker providers: ordinary host paths keep using DSH's native local implementations, while deterministic SSH workspace anchors enter the matching server's remote execution world without tool-specific forks.
 
 [简体中文](README.zh-CN.md)
 
@@ -9,17 +9,19 @@ An SSH remote-workspace bundle for [DeepSeek Harness](https://github.com/deepsee
 - Add, edit, and remove multiple SSH servers in **Settings → Plugins → SSH workspaces**.
 - Configure each server's host, port, user, remote root, host-key fingerprint, startup workspaces, and authentication independently.
 - Use private keys, ssh-agent, automatic authentication, or strict password-only authentication. Passwords go to the DSH credential store, never ordinary settings, and are never read back into the browser.
-- Browse every configured server from **Add workspace**, then add or create a remote directory.
+- Browse the local filesystem and every configured server from the same **Add workspace** flow.
+- Keep existing local workspaces usable for Read, Write, Edit, Bash, Glob, Grep, terminals, and other process-backed tools after SSH is configured.
 - Run Read, Write, Edit, and directory operations through SFTP.
 - Run Bash, background jobs, Glob, Grep, LSP, PTY terminals, and out-of-process subagents through the selected server's SSH connection.
 - Keep identically named paths on different servers isolated by a stable server ID.
 - Keep source files remote. The host stores only empty workspace anchors under `~/.dsh/ssh-workspaces/` by default.
 
 ```text
-DSH session cwd (local empty anchor)
-  └─ server-aware path mapper
-      ├─ Read / Write / Edit ── ctx.fs ───────── SFTP ── remote files
-      └─ Bash / Glob / Grep ─── ctx.subprocess ─ SSH ─── remote processes
+DSH session cwd
+  ├─ ordinary local path ────── native fs / local subprocess
+  └─ local empty SSH anchor ─── server-aware path mapper
+      ├─ Read / Write / Edit ── SFTP ── remote files
+      └─ Bash / Glob / Grep ─── SSH ─── remote processes
 ```
 
 ## Requirements
@@ -64,7 +66,7 @@ The package bundles ssh2's pure JavaScript / Node crypto path and has no install
 
 The password field is write-only. After saving, the UI reports only that a password is configured. `passwordRef` in settings is a reference; the secret is held by [DSH credentials](https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/credentials). The card uses DSH [settings](https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/settings) and the documented [settings-card surface](https://deepseek-harness.github.io/deepseek-harness/en/reference/cookbook/adding-a-settings-card).
 
-After saving, **Add workspace** shows all configured server names at its first level. Select one to browse beneath that server's remote root.
+After saving, **Add workspace** shows **Local filesystem** followed by all configured server names. Select the local entry to browse host directories, or a server to browse beneath that server's remote root. The picker keeps a **Workspaces** breadcrumb so either world remains reachable without changing plugin configuration.
 
 ### Host keys
 
@@ -127,12 +129,13 @@ DSH registers local directories as workspaces. The plugin therefore creates one 
 ~/.dsh/ssh-workspaces/staging-password/workspace
 ```
 
-A session stores the host anchor as its `cwd`. Before each operation, the filesystem and subprocess providers use the canonical real path and server ID to translate it back to the remote directory. This also normalizes aliases such as macOS `/private/tmp`. Anchors contain no source, and deleting a DSH workspace or anchor never deletes remote files.
+A remote session stores the host anchor as its `cwd`. Before each operation, the hybrid filesystem and subprocess providers use the canonical real path and server ID to translate it back to the remote directory. A local session retains its ordinary canonical host `cwd` and delegates to DSH's native local providers. Routing is therefore explicit and workspace-scoped rather than inferred from an absolute path that might exist in both worlds. This also normalizes aliases such as macOS `/private/tmp`. Anchors contain no source, and deleting a DSH workspace or anchor never deletes remote files.
 
 ## Security boundaries and limitations
 
 - A server's `root` bounds file tools, directory browsing, and accepted process working directories. It is not a remote command sandbox: Bash has the SSH user's full authority and can access outside `root` from within a command. Use a dedicated low-privilege account or server-side isolation in production.
 - A host sandbox cannot confine remote processes. The bundle retains `dsh-bash-sandbox` only as the DSH shell capability wrapper and pins the preset to `danger-full-access`; command authority is exactly the SSH user's server-side authority.
+- The bundle-wide `danger-full-access` preset also applies to local workspaces while this bundle is active. Local commands and file mutations therefore have the DSH host account's authority; run the profile under an appropriately restricted account.
 - Atomic SFTP replace/create requires OpenSSH `posix-rename` and `hardlink` extensions. Missing extensions fail explicitly rather than silently degrading to non-atomic writes.
 - Closing an SSH channel cannot prove that deliberately daemonized remote descendants exited.
 - PTY I/O and signals are supported, but SSH does not expose foreground PGID evidence; Harness uses bounded-silence fallback behavior.
@@ -150,4 +153,4 @@ npm run build
 npm run pack:check
 ```
 
-`test:loopback` starts an ephemeral local SSH server and verifies password authentication, host-key checking, SFTP, and remote execution. Release acceptance should additionally install the current tarball into a real DSH profile, configure at least two logical servers through the Web UI, and exercise Read/Write/Bash/Glob/Grep in actual Agent sessions; ordinary unit tests do not replace that E2E step.
+`test:loopback` starts an ephemeral local SSH server and verifies password authentication, host-key checking, SFTP, remote execution, and local/SSH routing in one provider instance. Release acceptance should additionally install the current tarball into a real DSH profile, add at least one local workspace and two logical servers through the Web UI, and exercise Read/Write/Bash/Glob/Grep in both local and remote Agent sessions; ordinary unit tests do not replace that E2E step.

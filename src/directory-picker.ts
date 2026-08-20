@@ -1,15 +1,18 @@
+import { homedir } from 'node:os'
 import { posix } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import {
-  DirectoryPicker,
   DirectoryPickerError,
 } from '@deepseek-ai/dsh-host-directory-picker'
 import type {
+  DirectoryPickerBrowseCapability,
   DirectoryEntry,
   DirectoryListing,
   DirectoryPickerCapability,
 } from '@deepseek-ai/dsh-host-directory-picker'
+import BrowseDirectoryPicker from '@deepseek-ai/dsh-host-directory-picker-browse'
+import type { Config as BrowseConfig } from '@deepseek-ai/dsh-host-directory-picker-browse'
 import type { SshServerRuntime } from './index.js'
 import { sftpMkdir, sftpReadDir, sftpRealpath, sftpStat } from './sftp.js'
 
@@ -21,49 +24,56 @@ export interface Config {
   maxEntries?: number
 }
 
-interface ResolvedConfig extends Config {
-  maxEntries: number
-}
-
-/** Remote browse picker whose wire paths are deterministic local workspace anchors. */
-export class SshDirectoryPicker extends DirectoryPicker {
+/** Browse local host directories and SSH anchors through one workspace picker. */
+export class SshDirectoryPicker extends BrowseDirectoryPicker {
   static inject = ['sshWorkspace']
 
-  static Config: z<Config> = z.object({
+  static Config: z<BrowseConfig> = z.object({
     maxEntries: z.number().default(1000),
   })
 
-  private readonly config: ResolvedConfig
-  private readonly browseCapability: DirectoryPickerCapability = {
+  private readonly sshConfig: BrowseConfig
+  private readonly localCapability: DirectoryPickerBrowseCapability
+  private readonly hybridCapability: DirectoryPickerBrowseCapability = {
     kind: 'browse',
-    list: (path, signal) => this.list(path, signal),
-    createDirectory: (path, name) => this.createDirectory(path, name),
+    list: (path, signal) => this.listHybrid(path, signal),
+    createDirectory: (path, name) => this.createHybridDirectory(path, name),
   }
 
   constructor(ctx: Context, config: Config) {
-    super(ctx)
-    this.config = config as ResolvedConfig
-    if (!Number.isInteger(this.config.maxEntries) || this.config.maxEntries < 1) {
+    const resolved = config as BrowseConfig
+    super(ctx, resolved)
+    const localCapability = super.capability()
+    if (localCapability.kind !== 'browse') {
+      throw new Error('dsh-ssh-workspace: local directory picker must provide browse capability')
+    }
+    this.localCapability = localCapability
+    this.sshConfig = resolved
+    if (!Number.isInteger(this.sshConfig.maxEntries) || this.sshConfig.maxEntries < 1) {
       throw new Error('dsh-ssh-workspace: directory picker maxEntries must be a positive integer')
     }
   }
 
   capability(): DirectoryPickerCapability {
-    return this.browseCapability
+    return this.hybridCapability
   }
 
-  private async list(path?: string, signal?: AbortSignal): Promise<DirectoryListing> {
+  private async listHybrid(path?: string, signal?: AbortSignal): Promise<DirectoryListing> {
     signal?.throwIfAborted()
     if (path === undefined || path === this.ctx.sshWorkspace.anchorRoot) {
-      const entries: DirectoryEntry[] = this.ctx.sshWorkspace.listServers().map(server => ({
+      const entries: DirectoryEntry[] = [{
+        name: 'Local filesystem',
+        path: homedir(),
+        hidden: false,
+      }, ...this.ctx.sshWorkspace.listServers().map(server => ({
         name: server.config.name,
         path: server.paths.anchorRoot,
         hidden: false,
-      }))
+      }))]
       return {
         path: this.ctx.sshWorkspace.anchorRoot,
         home: this.ctx.sshWorkspace.anchorRoot,
-        crumbs: [{ name: 'SSH servers', path: this.ctx.sshWorkspace.anchorRoot, hidden: false }],
+        crumbs: [{ name: 'Workspaces', path: this.ctx.sshWorkspace.anchorRoot, hidden: false }],
         entries,
         truncated: false,
       }
@@ -74,12 +84,13 @@ export class SshDirectoryPicker extends DirectoryPicker {
       const routed = this.ctx.sshWorkspace.resolveAnchor(path)
       server = routed.server
       remote = routed.remotePath
-    } catch (error: unknown) {
-      throw new DirectoryPickerError(
-        'directory-unreadable',
-        path ?? '',
-        error instanceof Error ? error.message : String(error),
-      )
+    } catch {
+      const local = await this.localCapability.list(path, signal)
+      return {
+        ...local,
+        home: this.ctx.sshWorkspace.anchorRoot,
+        crumbs: [{ name: 'Workspaces', path: this.ctx.sshWorkspace.anchorRoot, hidden: false }, ...local.crumbs],
+      }
     }
     try {
       const sftp = await server.getSftp()
@@ -93,7 +104,7 @@ export class SshDirectoryPicker extends DirectoryPicker {
       const directories: Array<{ name: string; remote: string }> = []
       for (const row of rows.sort((left, right) => left.filename.localeCompare(right.filename))) {
         signal?.throwIfAborted()
-        if (directories.length > this.config.maxEntries) break
+        if (directories.length > this.sshConfig.maxEntries) break
         const child = posix.join(remote, row.filename)
         const kind = row.attrs.mode & S_IFMT
         let isDirectory = kind === S_IFDIR
@@ -108,8 +119,8 @@ export class SshDirectoryPicker extends DirectoryPicker {
         }
         if (isDirectory) directories.push({ name: row.filename, remote: child })
       }
-      const truncated = directories.length > this.config.maxEntries
-      if (truncated) directories.length = this.config.maxEntries
+      const truncated = directories.length > this.sshConfig.maxEntries
+      if (truncated) directories.length = this.sshConfig.maxEntries
       const targetAnchor = await server.materializeAnchor(remote)
       const entries: DirectoryEntry[] = []
       for (const entry of directories) {
@@ -136,13 +147,21 @@ export class SshDirectoryPicker extends DirectoryPicker {
     }
   }
 
-  private async createDirectory(path: string, name: string): Promise<string> {
+  private async createHybridDirectory(path: string, name: string): Promise<string> {
+    if (path === this.ctx.sshWorkspace.anchorRoot) {
+      throw new DirectoryPickerError('directory-create-failed', path, 'choose the local filesystem or an SSH server first')
+    }
+    let routed: ReturnType<typeof this.ctx.sshWorkspace.resolveAnchor>
+    try {
+      routed = this.ctx.sshWorkspace.resolveAnchor(path)
+    } catch {
+      return await this.localCapability.createDirectory(path, name)
+    }
     if (name.trim().length === 0 || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
       throw new DirectoryPickerError('directory-create-failed', path, 'directory name must be one non-blank path segment')
     }
     let remote: string
     try {
-      const routed = this.ctx.sshWorkspace.resolveAnchor(path)
       const parent = await routed.server.requireRemoteDirectory(routed.remotePath)
       remote = posix.join(parent, name)
       await sftpMkdir(await routed.server.getSftp(), remote)
@@ -159,7 +178,7 @@ export class SshDirectoryPicker extends DirectoryPicker {
     const rel = posix.relative(root, remote)
     const segments = rel.length === 0 ? [] : rel.split('/')
     const rows: DirectoryEntry[] = [{
-      name: 'SSH servers',
+      name: 'Workspaces',
       path: this.ctx.sshWorkspace.anchorRoot,
       hidden: false,
     }, {

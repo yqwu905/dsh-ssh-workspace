@@ -25,8 +25,10 @@
     - id: ssh-workspace-registrar
       name: 'dsh-ssh-workspace/workspaces'
 
-# Disable the original providers by their guarded identity, then insert SSH
-# providers under new row ids. Cordis refuses an in-place name change.
+# Disable the original single-world providers by their guarded identity, then
+# insert mixed local/SSH routers under new row ids. The routers inherit DSH's
+# native local implementations and select SSH only for deterministic anchors.
+# Cordis refuses an in-place name change.
 - id: subprocess
   name: '@deepseek-ai/dsh-subprocess-local'
   disabled: true
@@ -66,8 +68,8 @@
       danger-full-access:
         sandbox: danger-full-access
         approval: never
-        name: SSH user authority
-        description: Commands run with the configured SSH user's server-side authority.
+        name: Local or SSH authority
+        description: Commands run with the DSH host account or the selected SSH user's server-side authority.
 
 - insert:
     - id: subprocess-ssh
@@ -86,8 +88,10 @@
 - id: tool-pwsh
   disabled: true
 
-# The Web bundle contributes this guarded row. It is absent in a base-only
-# profile (which may log one harmless "entry not found" patch diagnostic).
+# The Web bundle contributes this guarded row. The mixed picker below retains
+# its local browse implementation and adds an SSH-server root alongside it. It
+# is absent in a base-only profile (which may log one harmless "entry not
+# found" patch diagnostic).
 - id: directory-picker
   name: '@deepseek-ai/dsh-host-directory-picker-auto'
   disabled: true
@@ -100,7 +104,7 @@
 
     # The adaptive DSH picker normally mounts its Host backend and matching
     # Client surface as a pair. Because this bundle replaces only the backend
-    # with the SSH implementation, mount the browse surface explicitly so the
-    # Web UI can render and drive remote directory navigation.
+    # with the mixed local/SSH implementation, mount the browse surface
+    # explicitly so the Web UI can drive both directory worlds.
     - id: directory-picker-ssh-ui
       name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'

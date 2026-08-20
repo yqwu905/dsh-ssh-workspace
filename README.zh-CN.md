@@ -1,6 +1,6 @@
 # dsh-ssh-workspace
 
-面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 SSH 远程工作区 bundle。它遵循 Cordis 的服务替换方式，不修改 Agent 或工具代码：将 `ctx.fs` 与 `ctx.subprocess` 一起替换为 SSH provider，让现有工具进入对应服务器上的同一个远端执行世界。
+面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的本地/SSH 混合工作区 bundle。它提供带路由的 `ctx.fs`、`ctx.subprocess` 和目录选择器：普通本机路径继续使用 DSH 原生本地实现，只有确定性的 SSH 工作区锚点才进入对应服务器的远端执行世界，无需修改 Agent 或各个工具。
 
 [English](README.md)
 
@@ -9,17 +9,19 @@
 - 在 DSH 的“设置 → 插件 → SSH 工作区”中添加、编辑和删除多台 SSH 服务器。
 - 每台服务器可独立配置主机、端口、用户、远程根目录、主机密钥指纹、启动工作区和认证方式。
 - 支持私钥、ssh-agent、自动认证和强制仅密码认证；密码写入 DSH credential store，不保存在普通设置中，也不会回显到浏览器。
-- “添加工作区”先列出所有已配置服务器，再浏览或创建该服务器上的目录。
+- 同一个“添加工作区”入口可浏览本机文件系统和所有已配置服务器。
+- 配置 SSH 后，已有本地工作区仍可正常使用 Read、Write、Edit、Bash、Glob、Grep、终端及其他进程类工具。
 - `Read`、`Write`、`Edit`、目录列表等文件工具通过 SFTP 操作远端文件。
 - Bash、后台任务、Glob、Grep、LSP、PTY 终端和进程外 subagent 都经对应 SSH 连接执行。
 - 同一路径可存在于多台服务器；内部 target 带服务器 ID，不会串到另一台服务器。
 - 远端源文件不会同步或挂载到本机。本机只保存空的工作区锚点，默认位于 `~/.dsh/ssh-workspaces/`。
 
 ```text
-DSH session cwd (local empty anchor)
-  └─ server-aware path mapper
-      ├─ Read / Write / Edit ── ctx.fs ───────── SFTP ── remote files
-      └─ Bash / Glob / Grep ─── ctx.subprocess ─ SSH ─── remote processes
+DSH session cwd
+  ├─ 普通本机路径 ───────────── 原生本地 fs / subprocess
+  └─ SSH 本机空锚点 ─────────── server-aware path mapper
+      ├─ Read / Write / Edit ── SFTP ── 远端文件
+      └─ Bash / Glob / Grep ─── SSH ─── 远端进程
 ```
 
 ## 要求
@@ -64,7 +66,7 @@ dsh plugin --profile web add ./dsh-ssh-workspace
 
 密码字段是只写的：保存后页面只显示“已配置密码”，不会把密码取回浏览器。设置中的 `passwordRef` 只是凭据引用，真实密码由 [DSH credentials](https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/credentials) 保存。配置卡遵循 DSH 的 [settings](https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/settings) 与 [settings card](https://deepseek-harness.github.io/deepseek-harness/en/reference/cookbook/adding-a-settings-card) 机制。
 
-保存后点击侧栏“添加工作区”，目录选择器的第一层会显示所有服务器名称；选择服务器后即可浏览该服务器的远程根目录。
+保存后点击侧栏“添加工作区”，目录选择器的第一层会先显示“Local filesystem”，随后列出所有服务器名称。选择本地入口可浏览宿主机目录，选择服务器则浏览其远程根目录；“Workspaces”面包屑可随时返回两类入口。
 
 ### 主机密钥
 
@@ -127,12 +129,13 @@ DSH 工作区注册器只接受本机存在的目录。插件为每台服务器�
 ~/.dsh/ssh-workspaces/staging-password/workspace
 ```
 
-Session 的 `cwd` 保存本机锚点；文件和子进程 provider 在执行前，根据规范化的真实路径和服务器 ID 翻译回远程目录。macOS `/private/tmp` 等路径别名也会先经 `realpath` 统一。锚点不含远端源码，删除 DSH 工作区或本机锚点不会删除服务器文件。
+远程 Session 的 `cwd` 保存本机锚点；混合文件和子进程 provider 在执行前，根据规范化的真实路径和服务器 ID 翻译回远程目录。本地 Session 则保留普通本机规范路径，并委托给 DSH 原生本地 provider。路由由工作区明确决定，不会根据一个可能同时存在于本地和远端的绝对路径猜测。macOS `/private/tmp` 等路径别名也会先经 `realpath` 统一。锚点不含远端源码，删除 DSH 工作区或本机锚点不会删除服务器文件。
 
 ## 安全边界与限制
 
 - 每台服务器的 `root` 是文件工具、目录浏览和进程工作目录的路径边界，不是远端命令沙箱。Bash 命令拥有 SSH 用户的完整权限，也能在命令内部访问 `root` 之外；生产环境应使用专用低权限账号、容器或服务器侧强制策略。
 - 本机 sandbox 无法约束服务器进程。bundle 保留 `dsh-bash-sandbox` 作为 DSH shell capability 包装层，但权限预设固定为 `danger-full-access`；命令权限等同于 SSH 用户权限。
+- bundle 启用期间，本地工作区同样使用全局 `danger-full-access` 预设。本地命令和文件修改具有 DSH 宿主账号权限，建议用权限受限的专用账号运行该 profile。
 - SFTP overwrite 使用 OpenSSH `posix-rename` 扩展，guarded create 使用 `hardlink` 扩展。缺少扩展时会明确失败，不会静默退化为非原子覆盖。
 - SSH channel 关闭不能证明故意 daemonize 的所有远端孙进程都已退出。
 - PTY 可交互、可写入和发信号，但 SSH 协议不暴露 foreground PGID；Harness 会使用有界静默检测。
@@ -150,4 +153,4 @@ npm run build
 npm run pack:check
 ```
 
-`test:loopback` 会启动一次性本地 SSH 服务器，验证密码认证、主机密钥校验、SFTP 和远程命令。正式验收还应把当前 tarball 安装进真实 DSH profile，通过 Web UI 配置至少两台逻辑服务器，并在实际 Agent 会话中验证 Read/Write/Bash/Glob/Grep；常规单元测试不能代替这一步。
+`test:loopback` 会启动一次性本地 SSH 服务器，在同一 provider 实例中验证密码认证、主机密钥校验、SFTP、远程命令以及本地/SSH 路由。正式验收还应把当前 tarball 安装进真实 DSH profile，通过 Web UI 添加至少一个本地工作区和两台逻辑服务器，并在本地、远程 Agent 会话中分别验证 Read/Write/Bash/Glob/Grep；常规单元测试不能代替这一步。

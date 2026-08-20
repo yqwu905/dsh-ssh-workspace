@@ -1,8 +1,5 @@
 import { PassThrough, type Readable, type Writable } from 'node:stream'
 import { Context } from '@deepseek-ai/cordis'
-import {
-  SubprocessRuntime,
-} from '@deepseek-ai/dsh-subprocess'
 import type {
   SubprocessCollect,
   SubprocessCollectedOutputs,
@@ -16,6 +13,7 @@ import type {
   SubprocessTerminalSignal,
   SubprocessTerminalSpawnSpec,
 } from '@deepseek-ai/dsh-subprocess'
+import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import type { ClientChannel } from 'ssh2'
 import type { SshServerRuntime } from './index.js'
 import { TailOutputReader } from './output.js'
@@ -322,12 +320,12 @@ class SshTerminalHandle implements SubprocessTerminalHandle {
   }
 }
 
-/** SSH-backed subprocess seam. Existing bash/search/LSP/terminal/subagent consumers stay unchanged. */
-export class SshSubprocessRuntime extends SubprocessRuntime {
+/** Route SSH anchor working directories remotely and retain native local process execution elsewhere. */
+export class SshSubprocessRuntime extends LocalSubprocessRuntime {
   static inject = ['sshWorkspace']
 
-  private readonly live = new Set<SshSubprocessHandle>()
-  private readonly terminals = new Set<SshTerminalHandle>()
+  private readonly remoteProcesses = new Set<SshSubprocessHandle>()
+  private readonly remoteTerminals = new Set<SshTerminalHandle>()
   private disposing = false
 
   constructor(ctx: Context) {
@@ -335,14 +333,14 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
     ctx.effect(() => async () => {
       this.disposing = true
       const pending: Promise<unknown>[] = []
-      for (const handle of this.live) {
+      for (const handle of this.remoteProcesses) {
         handle.terminate()
         pending.push(handle.done.catch(() => {}))
       }
-      for (const terminal of this.terminals) pending.push(terminal.terminate())
+      for (const terminal of this.remoteTerminals) pending.push(terminal.terminate())
       await Promise.allSettled(pending)
-      this.live.clear()
-      this.terminals.clear()
+      this.remoteProcesses.clear()
+      this.remoteTerminals.clear()
     }, 'SSH subprocess teardown')
   }
 
@@ -351,7 +349,9 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
     env?: Readonly<Record<string, string>>,
     signal?: AbortSignal,
   ): Promise<string> {
-    return await this.ctx.sshWorkspace.defaultServer().resolveExecutable(command, env, signal)
+    const routed = this.ctx.sshWorkspace.resolveAnchoredPath(command)
+    if (routed === undefined) return await super.resolveExecutable(command, env, signal)
+    return await routed.server.resolveExecutable(routed.remotePath, env, signal)
   }
 
   override spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
@@ -360,12 +360,13 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
       throw new Error('dsh-ssh-workspace: argv must contain a non-empty program')
     }
     spec.signal?.throwIfAborted()
-    const routed = this.ctx.sshWorkspace.resolvePath(spec.cwd)
+    const routed = this.ctx.sshWorkspace.resolveAnchoredPath(spec.cwd)
+    if (routed === undefined) return super.spawn(spec)
     const handle = new SshSubprocessHandle(routed.server, spec, routed.remotePath)
-    this.live.add(handle)
+    this.remoteProcesses.add(handle)
     void handle.done.then(
-      () => this.live.delete(handle),
-      () => this.live.delete(handle),
+      () => this.remoteProcesses.delete(handle),
+      () => this.remoteProcesses.delete(handle),
     )
     return handle
   }
@@ -376,12 +377,13 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
       throw new Error('dsh-ssh-workspace: terminal argv must contain a non-empty program')
     }
     spec.signal?.throwIfAborted()
-    const routed = this.ctx.sshWorkspace.resolvePath(spec.cwd)
+    const routed = this.ctx.sshWorkspace.resolveAnchoredPath(spec.cwd)
+    if (routed === undefined) return await super.spawnTerminal(spec)
     const handle = new SshTerminalHandle(routed.server, spec, routed.remotePath)
-    this.terminals.add(handle)
+    this.remoteTerminals.add(handle)
     void handle.done.then(
-      () => this.terminals.delete(handle),
-      () => this.terminals.delete(handle),
+      () => this.remoteTerminals.delete(handle),
+      () => this.remoteTerminals.delete(handle),
     )
     return handle
   }
