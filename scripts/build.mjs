@@ -6,6 +6,7 @@ await build({
     index: 'src/index.ts',
     fs: 'src/fs.ts',
     subprocess: 'src/subprocess.ts',
+    'local-pwsh-subprocess': 'src/local-pwsh-subprocess.ts',
     'directory-picker': 'src/directory-picker.ts',
     workspaces: 'src/workspaces.ts',
   },

@@ -10,7 +10,7 @@ A mixed local/SSH workspace bundle for [DeepSeek Harness](https://github.com/dee
 - Configure each server's host, port, user, remote root, host-key fingerprint, startup workspaces, and authentication independently.
 - Use private keys, ssh-agent, automatic authentication, or strict password-only authentication. Passwords go to the DSH credential store, never ordinary settings, and are never read back into the browser.
 - Browse the local filesystem and every configured server from the same **Add workspace** flow.
-- Keep existing local workspaces usable for Read, Write, Edit, Bash, Glob, Grep, terminals, and other process-backed tools after SSH is configured.
+- Keep existing local workspaces usable for Read, Write, Edit, the host-native shell (PowerShell on Windows), Glob, Grep, terminals, and other process-backed tools after SSH is configured.
 - Run Read, Write, Edit, and directory operations through SFTP.
 - Run Bash, background jobs, Glob, Grep, LSP, PTY terminals, and out-of-process subagents through the selected server's SSH connection.
 - Keep identically named paths on different servers isolated by a stable server ID.
@@ -18,7 +18,7 @@ A mixed local/SSH workspace bundle for [DeepSeek Harness](https://github.com/dee
 
 ```text
 DSH session cwd
-  ├─ ordinary local path ────── native fs / local subprocess
+  ├─ ordinary local path ────── native fs / local subprocess / Windows pwsh
   └─ local empty SSH anchor ─── server-aware path mapper
       ├─ Read / Write / Edit ── SFTP ── remote files
       └─ Bash / Glob / Grep ─── SSH ─── remote processes
@@ -30,6 +30,7 @@ DSH session cwd
 - Node.js `^22.19.0` or `>=24`.
 - Direct connectivity to a POSIX SSH server.
 - Remote `bash` for Bash tools and remote `rg` (ripgrep) for Glob/Grep. LSP and subagent features require their corresponding remote executables.
+- On Windows hosts, local workspaces expose PowerShell while SSH workspaces continue to use Bash. PowerShell deliberately rejects an SSH-anchor working directory.
 - `~/.ssh/config`, ProxyJump, and ProxyCommand are not currently parsed.
 
 ## Install
@@ -134,7 +135,7 @@ A remote session stores the host anchor as its `cwd`. Before each operation, the
 ## Security boundaries and limitations
 
 - A server's `root` bounds file tools, directory browsing, and accepted process working directories. It is not a remote command sandbox: Bash has the SSH user's full authority and can access outside `root` from within a command. Use a dedicated low-privilege account or server-side isolation in production.
-- A host sandbox cannot confine remote processes. The bundle retains `dsh-bash-sandbox` only as the DSH shell capability wrapper and pins the preset to `danger-full-access`; command authority is exactly the SSH user's server-side authority.
+- A host sandbox cannot confine remote processes. The bundle retains `dsh-bash-sandbox` as the SSH-capable root shell wrapper and pins the preset to `danger-full-access`; command authority is exactly the SSH user's server-side authority. On Windows, local PowerShell runs in an isolated shell/subprocess realm and cannot target an SSH anchor.
 - The bundle-wide `danger-full-access` preset also applies to local workspaces while this bundle is active. Local commands and file mutations therefore have the DSH host account's authority; run the profile under an appropriately restricted account.
 - Atomic SFTP replace/create requires OpenSSH `posix-rename` and `hardlink` extensions. Missing extensions fail explicitly rather than silently degrading to non-atomic writes.
 - Closing an SSH channel cannot prove that deliberately daemonized remote descendants exited.

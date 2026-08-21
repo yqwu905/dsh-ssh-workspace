@@ -38,7 +38,7 @@
   disabled: true
 
 # Local sandbox runners cannot confine a remote process. Retain the sandboxing
-# Bash provider only as the shell capability wrapper, but pin its deployment
+# Bash provider as the root shell capability wrapper, but pin its deployment
 # mode to danger-full-access. In that mode it delegates the original argv to
 # ctx.subprocess without invoking the host sandbox, while still publishing the
 # sandboxMode fact required by DSH's permission preset service.
@@ -78,15 +78,33 @@
     - id: fs-ssh
       name: 'dsh-ssh-workspace/fs'
 
+    # DSH normally mounts exactly one platform shell under ctx.shell. Windows
+    # local workspaces still need PowerShell while SSH workspaces need Bash, so
+    # place the PowerShell executor and tool in their own shell realm. Its
+    # subprocess realm contains a guarded native-local provider that refuses SSH
+    # anchors. Hiding the root settings service from the isolated executor also
+    # prevents Bash and pwsh from registering the same `shell` settings namespace.
+    - id: subprocess-pwsh-local
+      name: 'dsh-ssh-workspace/local-pwsh-subprocess'
+      disabled: !!js process.platform !== 'win32'
+      isolate:
+        subprocess: dsh-ssh-local-pwsh
+
 - id: pwsh-sandbox
-  disabled: true
+  disabled: !!js process.platform !== 'win32'
+  isolate:
+    shell: dsh-ssh-local-pwsh
+    subprocess: dsh-ssh-local-pwsh
+    settings: dsh-ssh-local-pwsh
 
 - id: tool-bash
   name: '@deepseek-ai/dsh-tool-bash'
   disabled: false
 
 - id: tool-pwsh
-  disabled: true
+  disabled: !!js process.platform !== 'win32'
+  isolate:
+    shell: dsh-ssh-local-pwsh
 
 # The Web bundle contributes this guarded row. The mixed picker below retains
 # its local browse implementation and adds an SSH-server root alongside it. It

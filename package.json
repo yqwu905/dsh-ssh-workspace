@@ -18,6 +18,10 @@
       "types": "./lib/subprocess.d.ts",
       "default": "./lib/subprocess.js"
     },
+    "./local-pwsh-subprocess": {
+      "types": "./lib/local-pwsh-subprocess.d.ts",
+      "default": "./lib/local-pwsh-subprocess.js"
+    },
     "./directory-picker": {
       "types": "./lib/directory-picker.d.ts",
       "default": "./lib/directory-picker.js"
