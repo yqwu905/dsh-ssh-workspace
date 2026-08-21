@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest'
 
 describe('mixed shell composition', () => {
   it('keeps Bash at the root and mounts Windows PowerShell in isolated local realms', async () => {
-    const patch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+    const patch = (await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8'))
+      .replaceAll('\r\n', '\n')
 
     expect(patch).toContain([
       '- id: bash-sandbox',
