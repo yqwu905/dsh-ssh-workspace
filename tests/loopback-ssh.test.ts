@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { generateKeyPairSync } from 'node:crypto'
 import { constants } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdtemp, rm } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -29,6 +29,11 @@ describe('loopback SSH transport', () => {
       }).on('ready', () => {
         connection.on('session', (accept) => {
           const session = accept()
+          let ptyRequested = false
+          session.on('pty', (acceptPty) => {
+            ptyRequested = true
+            acceptPty()
+          })
           session.on('sftp', (acceptSftp) => {
             const sftp = acceptSftp()
             const attrs = {
@@ -47,7 +52,11 @@ describe('loopback SSH transport', () => {
           session.on('exec', (acceptExec, _reject, exec) => {
             const stream = acceptExec()
             const child = spawn('/bin/sh', ['-c', exec.command], { stdio: ['pipe', 'pipe', 'pipe'] })
-            stream.on('data', (chunk: Buffer | string) => child.stdin.write(chunk))
+            stream.on('data', (chunk: Buffer | string) => {
+              const data = Buffer.from(chunk)
+              if (ptyRequested && data.includes(0x03)) child.kill('SIGINT')
+              else child.stdin.write(data)
+            })
             stream.on('end', () => child.stdin.end())
             child.stdout.on('data', chunk => stream.write(chunk))
             child.stderr.on('data', chunk => stream.stderr.write(chunk))
@@ -108,6 +117,51 @@ describe('loopback SSH transport', () => {
         lossy: false,
       })
       expect(handle.collected.stderr?.readFrom(0).text).toBe('')
+
+      const interrupt = new AbortController()
+      const survivorPath = join(localRoot, 'interrupted-child-survived')
+      const delayedWrite = `setTimeout(()=>require('node:fs').writeFileSync('${survivorPath}','alive'),1500)`
+      const interrupted = subprocess.spawn({
+        argv: ['/bin/sh', '-c', `${process.execPath} -e "${delayedWrite}" & child=$!; printf "%s\\n" "$child"; wait "$child"`],
+        cwd: remoteRoot,
+        stdio: {
+          stdin: 'ignore',
+          stdout: { maxBytes: 1024 },
+          stderr: { maxBytes: 1024 },
+        },
+        graceMs: 500,
+        signal: interrupt.signal,
+      })
+      const childPid = await vi.waitFor(() => {
+        const text = interrupted.collected.stdout?.readFrom(0).text.trim() ?? ''
+        expect(text).toMatch(/^[1-9][0-9]*$/u)
+        return Number(text)
+      })
+      interrupt.abort()
+      await expect(interrupted.done).resolves.toBeDefined()
+      expect(interrupted.collected.stderr?.readFrom(0).text).not.toContain('dsh-ssh-process:')
+      expect(childPid).toBeGreaterThan(0)
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 2_000))
+      await expect(access(survivorPath)).rejects.toThrow()
+
+      const terminal = await subprocess.spawnTerminal({
+        argv: [
+          process.execPath,
+          '-e',
+          "process.on('SIGINT',()=>{process.stdout.write('interrupted');process.exit(0)});process.stdout.write('ready');setInterval(()=>{},1000)",
+        ],
+        cwd: remoteRoot,
+        env: {},
+        rows: 24,
+        cols: 80,
+        graceMs: 500,
+      })
+      let terminalOutput = ''
+      terminal.output.on('data', (chunk: Buffer | string) => { terminalOutput += String(chunk) })
+      await vi.waitFor(() => expect(terminalOutput).toContain('ready'))
+      await terminal.signalForeground('SIGINT')
+      await expect(terminal.done).resolves.toBeDefined()
+      expect(terminalOutput).toContain('interrupted')
 
       const localHandle = subprocess.spawn({
         argv: [process.execPath, '-e', 'process.stdout.write(`local:${process.cwd()}`)'],
