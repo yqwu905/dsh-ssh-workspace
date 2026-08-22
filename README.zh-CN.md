@@ -130,7 +130,7 @@ DSH 工作区注册器只接受本机存在的目录。插件为每台服务器�
 ~/.dsh/ssh-workspaces/staging-password/workspace
 ```
 
-远程 Session 的 `cwd` 保存本机锚点；混合文件和子进程 provider 在执行前，根据规范化的真实路径和服务器 ID 翻译回远程目录。本地 Session 则保留普通本机规范路径，并委托给 DSH 原生本地 provider。路由由工作区明确决定，不会根据一个可能同时存在于本地和远端的绝对路径猜测。macOS `/private/tmp` 等路径别名也会先经 `realpath` 统一。锚点不含远端源码，删除 DSH 工作区或本机锚点不会删除服务器文件。
+远程 Session 的 `cwd` 保存本机锚点；混合文件和子进程 provider 在执行前，根据规范化的真实路径和服务器 ID 翻译回远程目录。本地 Session 则保留普通本机规范路径，并委托给 DSH 原生本地 provider。路由由工作区明确决定，不会根据一个可能同时存在于本地和远端的绝对路径猜测。macOS `/private/tmp` 等路径别名也会先经 `realpath` 统一。锚点不含远端源码，删除 DSH 工作区或本机锚点不会删除服务器文件。通过 Read/Write/Edit 工具行在宿主桌面打开文件时，插件会在隐藏的 `.open-cache` 目录下载一份最新的只读快照。桌面应用中的修改不会同步回 SSH；如需实时编辑远端文件，请使用支持 SSH 的编辑器。
 
 ## 安全边界与限制
 
