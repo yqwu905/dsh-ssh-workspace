@@ -10,7 +10,7 @@
 - 每台服务器可独立配置主机、端口、用户、远程根目录、主机密钥指纹、启动工作区和认证方式。
 - 支持私钥、ssh-agent、自动认证和强制仅密码认证；密码写入 DSH credential store，不保存在普通设置中，也不会回显到浏览器。
 - 同一个“添加工作区”入口可浏览本机文件系统和所有已配置服务器。
-- 配置 SSH 后，已有本地工作区仍可正常使用 Read、Write、Edit、Bash、Glob、Grep、终端及其他进程类工具。
+- 配置 SSH 后，已有本地工作区仍可正常使用 Read、Write、Edit、宿主原生 Shell（Windows 上为 PowerShell）、Glob、Grep、终端及其他进程类工具。
 - `Read`、`Write`、`Edit`、目录列表等文件工具通过 SFTP 操作远端文件。
 - Bash、后台任务、Glob、Grep、LSP、PTY 终端和进程外 subagent 都经对应 SSH 连接执行。
 - 同一路径可存在于多台服务器；内部 target 带服务器 ID，不会串到另一台服务器。
@@ -18,7 +18,7 @@
 
 ```text
 DSH session cwd
-  ├─ 普通本机路径 ───────────── 原生本地 fs / subprocess
+  ├─ 普通本机路径 ───────────── 原生本地 fs / subprocess / Windows pwsh
   └─ SSH 本机空锚点 ─────────── server-aware path mapper
       ├─ Read / Write / Edit ── SFTP ── 远端文件
       └─ Bash / Glob / Grep ─── SSH ─── 远端进程
@@ -30,6 +30,7 @@ DSH session cwd
 - Node.js `^22.19.0` 或 `>=24`。
 - 可直接连接的 POSIX SSH 服务器。
 - Bash 工具需要远端 `bash`；Glob/Grep 需要远端 `rg`（ripgrep）；LSP 与 subagent 还需要各自的远端可执行文件。
+- Windows 宿主的本地工作区提供 PowerShell，SSH 工作区仍使用 Bash；PowerShell 会明确拒绝 SSH 锚点工作目录。
 - 目前不解析 `~/.ssh/config`，也不支持 `ProxyJump` / `ProxyCommand`。
 
 ## 安装
@@ -134,7 +135,7 @@ DSH 工作区注册器只接受本机存在的目录。插件为每台服务器�
 ## 安全边界与限制
 
 - 每台服务器的 `root` 是文件工具、目录浏览和进程工作目录的路径边界，不是远端命令沙箱。Bash 命令拥有 SSH 用户的完整权限，也能在命令内部访问 `root` 之外；生产环境应使用专用低权限账号、容器或服务器侧强制策略。
-- 本机 sandbox 无法约束服务器进程。bundle 保留 `dsh-bash-sandbox` 作为 DSH shell capability 包装层，但权限预设固定为 `danger-full-access`；命令权限等同于 SSH 用户权限。
+- 本机 sandbox 无法约束服务器进程。bundle 保留 `dsh-bash-sandbox` 作为可访问 SSH 的根 Shell 包装层，并把权限预设固定为 `danger-full-access`；命令权限等同于 SSH 用户权限。Windows 上的本地 PowerShell 运行在独立 Shell/subprocess 域中，不能指向 SSH 锚点。
 - bundle 启用期间，本地工作区同样使用全局 `danger-full-access` 预设。本地命令和文件修改具有 DSH 宿主账号权限，建议用权限受限的专用账号运行该 profile。
 - SFTP overwrite 使用 OpenSSH `posix-rename` 扩展，guarded create 使用 `hardlink` 扩展。缺少扩展时会明确失败，不会静默退化为非原子覆盖。
 - SSH channel 关闭不能证明故意 daemonize 的所有远端孙进程都已退出。
