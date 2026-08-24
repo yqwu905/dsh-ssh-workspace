@@ -22,10 +22,19 @@ function fakeRuntime() {
   }
 }
 
+function fakeSandboxPolicy(workspaceRoot = '/tmp') {
+  return {
+    defaultMode: 'workspace-write',
+    workspaceRoot,
+    resolve: () => ({ mode: 'workspace-write', workspaceRoot }),
+  }
+}
+
 describe('Cordis provider composition', () => {
   it('registers filesystem and subprocess providers over one SSH runtime seam', async () => {
     const ctx = new Context()
     ctx.provide('sshWorkspace', fakeRuntime() as never)
+    ctx.provide('sandboxPolicy', fakeSandboxPolicy() as never)
     const fsFiber = await ctx.plugin(SshFileSystem)
     const processFiber = await ctx.plugin(SshSubprocessRuntime)
     expect(ctx.fs).toBeInstanceOf(SshFileSystem)
@@ -41,6 +50,7 @@ describe('Cordis provider composition', () => {
     await writeFile(join(root, 'local.txt'), 'local workspace')
     const ctx = new Context()
     ctx.provide('sshWorkspace', fakeRuntime() as never)
+    ctx.provide('sandboxPolicy', fakeSandboxPolicy(root) as never)
     const fsFiber = await ctx.plugin(SshFileSystem)
     const processFiber = await ctx.plugin(SshSubprocessRuntime)
     try {
@@ -66,6 +76,47 @@ describe('Cordis provider composition', () => {
       await processFiber.dispose()
       await fsFiber.dispose()
       await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('enforces read-only and workspace-write for local filesystem mutations', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-ssh-policy-root-'))
+    const outside = await mkdtemp(join(process.cwd(), 'dsh-ssh-policy-outside-'))
+    await writeFile(join(root, 'inside.txt'), 'inside')
+    await writeFile(join(outside, 'outside.txt'), 'outside')
+    const ctx = new Context()
+    ctx.provide('sshWorkspace', fakeRuntime() as never)
+    ctx.provide('sandboxPolicy', fakeSandboxPolicy(root) as never)
+    const fiber = await ctx.plugin(SshFileSystem)
+    try {
+      const inside = await ctx.fs.resolve(join(root, 'inside.txt'))
+      const outsideTarget = await ctx.fs.resolve(join(outside, 'outside.txt'))
+      await expect(ctx.fs.writeText(
+        inside,
+        'denied',
+        undefined,
+        undefined,
+        { mode: 'read-only', workspaceRoot: root },
+      )).rejects.toMatchObject({ code: 'FS_SANDBOX_DENIED' })
+      await expect(ctx.fs.writeText(
+        outsideTarget,
+        'denied',
+        undefined,
+        undefined,
+        { mode: 'workspace-write', workspaceRoot: root },
+      )).rejects.toMatchObject({ code: 'FS_SANDBOX_DENIED' })
+      await expect(ctx.fs.writeText(
+        inside,
+        'allowed',
+        undefined,
+        undefined,
+        { mode: 'workspace-write', workspaceRoot: root },
+      )).resolves.toMatchObject({ operation: 'update' })
+      await expect(ctx.fs.readText(inside)).resolves.toBe('allowed')
+    } finally {
+      await fiber.dispose()
+      await rm(root, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
     }
   })
 

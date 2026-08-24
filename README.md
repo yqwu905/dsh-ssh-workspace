@@ -13,6 +13,7 @@ A mixed local/SSH workspace bundle for [DeepSeek Harness](https://github.com/dee
 - Keep existing local workspaces usable for Read, Write, Edit, the host-native shell (PowerShell on Windows), Glob, Grep, terminals, and other process-backed tools after SSH is configured.
 - Run Read, Write, Edit, and directory operations through SFTP.
 - Run Bash, background jobs, Glob, Grep, LSP, PTY terminals, and out-of-process subagents through the selected server's SSH connection.
+- Keep DSH's `read-only`, `workspace-write` (default), and `danger-full-access` permission presets in both local and SSH workspaces.
 - Keep identically named paths on different servers isolated by a stable server ID.
 - Keep source files remote. The host stores only empty workspace anchors under `~/.dsh/ssh-workspaces/` by default.
 
@@ -26,10 +27,11 @@ DSH session cwd
 
 ## Requirements
 
-- A profile compatible with DeepSeek Harness `0.1.0-rc.7`.
+- A profile compatible with DeepSeek Harness `0.1.0-rc.7` or `0.1.1-rc.2`.
 - Node.js `^22.19.0` or `>=24`.
 - Direct connectivity to a POSIX SSH server.
 - Remote `bash` for Bash tools and remote `rg` (ripgrep) for Glob/Grep. LSP and subagent features require their corresponding remote executables.
+- Remote `bwrap` (bubblewrap) for confined SSH Bash commands under `read-only` or `workspace-write`. File tools enforce those modes through SFTP without requiring bubblewrap. `danger-full-access` does not use it.
 - On Windows hosts, local workspaces expose PowerShell while SSH workspaces continue to use Bash. PowerShell deliberately rejects an SSH-anchor working directory.
 - `~/.ssh/config`, ProxyJump, and ProxyCommand are not currently parsed.
 
@@ -83,6 +85,12 @@ ssh-keyscan -p 22 ssh.example.com 2>/dev/null | ssh-keygen -lf - -E sha256
 
 DSH's search tools start a ripgrep binary packaged for the host platform. The plugin recognizes that binary, resolves `rg` on the remote server, and maps host-anchor arguments into that server's remote paths. Install ripgrep remotely or set **Remote ripgrep executable** to its absolute remote path.
 
+### Permission presets
+
+The bundle preserves DSH's standard presets instead of replacing them. `workspace-write` remains the default, `read-only` rejects Write/Edit and confines Bash to a read-only remote filesystem, and `danger-full-access` runs with the SSH user's authority. In `workspace-write`, remote Bash may write only inside the session workspace and its private `/tmp`; SFTP Write/Edit may write only inside the session workspace.
+
+Remote Bash confinement is enforced on the SSH server with bubblewrap. If `bwrap` is missing or cannot create its namespace, a confined Bash call fails closed with `SANDBOX_UNAVAILABLE`; it never silently retries unconfined. Install and verify it on every configured server, for example with `command -v bwrap` and a simple read-only bubblewrap probe.
+
 ## Headless and compatibility configuration
 
 `servers` is the canonical multi-server configuration. `DSH_SSH_SERVERS` accepts the same JSON array. Keep plaintext secrets out of JSON and YAML; inject them through environment variables or DSH credentials.
@@ -134,9 +142,9 @@ A remote session stores the host anchor as its `cwd`. Before each operation, the
 
 ## Security boundaries and limitations
 
-- A server's `root` bounds file tools, directory browsing, and accepted process working directories. It is not a remote command sandbox: Bash has the SSH user's full authority and can access outside `root` from within a command. Use a dedicated low-privilege account or server-side isolation in production.
-- A host sandbox cannot confine remote processes. The bundle retains `dsh-bash-sandbox` as the SSH-capable root shell wrapper and pins the preset to `danger-full-access`; command authority is exactly the SSH user's server-side authority. On Windows, local PowerShell runs in an isolated shell/subprocess realm and cannot target an SSH anchor.
-- The bundle-wide `danger-full-access` preset also applies to local workspaces while this bundle is active. Local commands and file mutations therefore have the DSH host account's authority; run the profile under an appropriately restricted account.
+- A server's `root` bounds file tools, directory browsing, and accepted process working directories. Under `read-only` and `workspace-write`, remote bubblewrap prevents Bash writes outside the policy roots but still permits reads outside the configured server `root`, matching DSH's file-effect-only sandbox contract. Use a dedicated low-privilege account for stronger confidentiality boundaries.
+- A host sandbox cannot confine remote processes, so the mixed sandbox translates the session anchor into a remote path and runs bubblewrap on the SSH server. Missing or unusable bubblewrap fails closed for confined Bash. On Windows, local PowerShell remains in its isolated local shell/subprocess realm and cannot target an SSH anchor.
+- `danger-full-access` deliberately bypasses sandboxing. Local commands then have the DSH host account's authority and SSH commands have the selected SSH user's authority.
 - Atomic SFTP replace/create requires OpenSSH `posix-rename` and `hardlink` extensions. Missing extensions fail explicitly rather than silently degrading to non-atomic writes.
 - Closing an SSH channel cannot prove that deliberately daemonized remote descendants exited.
 - PTY I/O and signals are supported, but SSH does not expose foreground PGID evidence; Harness uses bounded-silence fallback behavior.

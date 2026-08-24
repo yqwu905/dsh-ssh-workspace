@@ -33,5 +33,16 @@ describe('mixed shell composition', () => {
       '    shell: dsh-ssh-local-pwsh',
     ].join('\n'))
     expect(patch).not.toMatch(/- id: (?:pwsh-sandbox|tool-pwsh)\n  disabled: true/u)
+    expect(patch).toContain([
+      '- id: sandbox',
+      "  name: '@deepseek-ai/dsh-sandbox-local'",
+      '  disabled: true',
+    ].join('\n'))
+    expect(patch).toContain([
+      '    - id: sandbox-ssh',
+      "      name: 'dsh-ssh-workspace/sandbox'",
+    ].join('\n'))
+    expect(patch).not.toMatch(/mode: danger-full-access/u)
+    expect(patch).not.toMatch(/defaultPreset: danger-full-access/u)
   })
 })

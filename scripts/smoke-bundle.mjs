@@ -1,6 +1,7 @@
 const entryPoints = [
   '../lib/index.js',
   '../lib/fs.js',
+  '../lib/sandbox.js',
   '../lib/subprocess.js',
   '../lib/local-pwsh-subprocess.js',
   '../lib/directory-picker.js',

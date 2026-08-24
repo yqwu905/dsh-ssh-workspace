@@ -77,6 +77,11 @@ describe('loopback SSH transport', () => {
     const anchorRoot = await mkdtemp(join(tmpdir(), 'dsh-ssh-loopback-anchor-'))
     const localRoot = await mkdtemp(join(tmpdir(), 'dsh-ssh-loopback-local-'))
     const ctx = new Context()
+    ctx.provide('sandboxPolicy', {
+      defaultMode: 'workspace-write',
+      workspaceRoot: anchorRoot,
+      resolve: () => ({ mode: 'workspace-write', workspaceRoot: anchorRoot }),
+    } as never)
     const runtimeFiber = await ctx.plugin(SshWorkspaceRuntime, {
       host: '127.0.0.1',
       port: (server.address() as AddressInfo).port,
