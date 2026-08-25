@@ -5,6 +5,7 @@ await build({
   entryPoints: {
     index: 'src/index.ts',
     fs: 'src/fs.ts',
+    sandbox: 'src/sandbox.ts',
     subprocess: 'src/subprocess.ts',
     'local-pwsh-subprocess': 'src/local-pwsh-subprocess.ts',
     'directory-picker': 'src/directory-picker.ts',

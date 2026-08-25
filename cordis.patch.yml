@@ -37,16 +37,12 @@
   name: '@deepseek-ai/dsh-fs-sandbox'
   disabled: true
 
-# Local sandbox runners cannot confine a remote process. Retain the sandboxing
-# Bash provider as the root shell capability wrapper, but pin its deployment
-# mode to danger-full-access. In that mode it delegates the original argv to
-# ctx.subprocess without invoking the host sandbox, while still publishing the
-# sandboxMode fact required by DSH's permission preset service.
-- id: sandbox-policy
-  name: '@deepseek-ai/dsh-sandbox-policy'
-  config:
-    mode: danger-full-access
-    workspaceRoot: !!js process.env.DSH_SSH_ANCHOR_ROOT ?? process.cwd()
+# Replace the same-world sandbox provider with a mixed provider: ordinary host
+# workspaces retain DSH's native runner, while SSH workspaces receive a remote
+# bubblewrap profile whose writable root is translated out of the host anchor.
+- id: sandbox
+  name: '@deepseek-ai/dsh-sandbox-local'
+  disabled: true
 
 - id: bash-sandbox
   name: '@deepseek-ai/dsh-bash-sandbox'
@@ -55,23 +51,10 @@
     cwd: !!js process.env.DSH_SSH_ANCHOR_ROOT ?? process.cwd()
     timeoutMs: 60000
 
-- id: approval
-  name: '@deepseek-ai/dsh-user-approval'
-  config:
-    policy: never
-
-- id: permission
-  name: '@deepseek-ai/dsh-permission-presets'
-  config:
-    defaultPreset: danger-full-access
-    presets:
-      danger-full-access:
-        sandbox: danger-full-access
-        approval: never
-        name: Local or SSH authority
-        description: Commands run with the DSH host account or the selected SSH user's server-side authority.
-
 - insert:
+    - id: sandbox-ssh
+      name: 'dsh-ssh-workspace/sandbox'
+
     - id: subprocess-ssh
       name: 'dsh-ssh-workspace/subprocess'
 

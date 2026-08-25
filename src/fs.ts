@@ -18,6 +18,9 @@ import type {
   FsWriteOutcome,
 } from '@deepseek-ai/dsh-fs'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
+import type { SandboxExecutionPolicy, SandboxMode } from '@deepseek-ai/dsh-sandbox'
+import { writableRoots } from '@deepseek-ai/dsh-sandbox'
+import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import type { Attributes, SFTPWrapper, Stats } from 'ssh2'
 import { decodeSshTarget, encodeSshTarget } from './index.js'
 import type { SshServerRuntime } from './index.js'
@@ -165,9 +168,14 @@ async function mkdirp(sftp: SFTPWrapper, path: string): Promise<void> {
 
 /** Route SSH anchor targets through SFTP and every other target through the host filesystem. */
 export class SshFileSystem extends LocalFileSystem {
-  static inject = ['sshWorkspace']
+  static inject = ['sshWorkspace', 'sandboxPolicy']
 
   private readonly remoteLocks = new Map<string, Promise<unknown>>()
+
+  /** Advertise the same policy capability as DSH's sandboxed local filesystem. */
+  override get sandboxMode(): SandboxMode {
+    return this.ctx.sandboxPolicy.defaultMode
+  }
 
   override async resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FsTarget> {
     assertNotAborted(opts?.signal, 'resolve')
@@ -360,10 +368,11 @@ export class SshFileSystem extends LocalFileSystem {
     content: string,
     expected?: FsWriteIntent,
     signal?: AbortSignal,
-    _sandboxPolicy?: unknown,
+    sandboxPolicy?: SandboxExecutionPolicy,
   ): Promise<FsWriteOutcome> {
-    const routed = this.remoteTarget(target)
-    if (routed === undefined) return await super.writeText(target, content, expected, signal)
+    const checked = await this.checkedTarget(target, sandboxPolicy)
+    const routed = this.remoteTarget(checked)
+    if (routed === undefined) return await super.writeText(checked, content, expected, signal)
     return await this.withRemoteLock(String(target.targetKey), async () => {
       const sftp = await routed.server.getSftp()
       const path = routed.remotePath
@@ -395,10 +404,11 @@ export class SshFileSystem extends LocalFileSystem {
     edit: FsEditRequest,
     expected?: { version: ReturnType<typeof FsVersion> },
     signal?: AbortSignal,
-    _sandboxPolicy?: unknown,
+    sandboxPolicy?: SandboxExecutionPolicy,
   ): Promise<FsEditOutcome> {
-    const routed = this.remoteTarget(target)
-    if (routed === undefined) return await super.editText(target, edit, expected, signal)
+    const checked = await this.checkedTarget(target, sandboxPolicy)
+    const routed = this.remoteTarget(checked)
+    if (routed === undefined) return await super.editText(checked, edit, expected, signal)
     return await this.withRemoteLock(String(target.targetKey), async () => {
       const sftp = await routed.server.getSftp()
       const path = routed.remotePath
@@ -434,6 +444,58 @@ export class SshFileSystem extends LocalFileSystem {
         missing.push(posix.basename(current))
         current = parent
       }
+    }
+  }
+
+  private async checkedTarget(
+    target: FsTarget,
+    sandboxPolicy?: SandboxExecutionPolicy,
+  ): Promise<FsTarget> {
+    const policy = sandboxPolicy ?? this.ctx.sandboxPolicy.resolve()
+    if (policy.mode === 'danger-full-access') return target
+    if (policy.mode === 'read-only') {
+      throw new FsError(
+        `cannot write "${target.displayPath}": file access denied under read-only mode`,
+        'FS_SANDBOX_DENIED',
+      )
+    }
+
+    const fresh = await this.refreshTarget(target)
+    const remote = this.remoteTarget(fresh)
+    if (remote !== undefined) {
+      const workspace = this.ctx.sshWorkspace.resolveAnchoredPath(policy.workspaceRoot)
+      const relative = workspace === undefined || workspace.server !== remote.server
+        ? '..'
+        : posix.relative(workspace.remotePath, remote.remotePath)
+      const contained = relative === ''
+        || (relative !== '..' && !relative.startsWith('../') && !posix.isAbsolute(relative))
+      if (contained) return fresh
+    } else {
+      for (const root of writableRoots({ ...policy, mode: 'workspace-write' })) {
+        const rootTarget = await this.resolve(root)
+        if (this.contains(rootTarget, fresh)) return fresh
+      }
+    }
+
+    throw new FsError(
+      `cannot write "${target.displayPath}": file access denied under workspace-write mode`,
+      'FS_SANDBOX_DENIED',
+    )
+  }
+
+  private async refreshTarget(target: FsTarget): Promise<FsTarget> {
+    const remote = this.remoteTarget(target)
+    if (remote === undefined) return await this.resolve(target.displayPath)
+    const canonical = await this.canonicalPath(await remote.server.getSftp(), remote.remotePath)
+    if (!remote.server.paths.containsRemote(canonical)) {
+      throw new FsError(
+        `cannot resolve "${target.displayPath}": symbolic link escapes configured SSH root`,
+        'FS_PERMISSION_DENIED',
+      )
+    }
+    return {
+      targetKey: FsTargetKey(encodeSshTarget(remote.server.config.id, canonical)),
+      displayPath: target.displayPath,
     }
   }
 
