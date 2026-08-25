@@ -1,8 +1,10 @@
-import { mkdirSync, realpathSync } from 'node:fs'
-import { access, mkdir, readFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { createWriteStream, mkdirSync, realpathSync } from 'node:fs'
+import { access, chmod, mkdir, readFile, rename, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { posix } from 'node:path'
+import { pipeline } from 'node:stream/promises'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-credentials'
@@ -11,6 +13,7 @@ import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-sett
 import z from '@deepseek-ai/schemastery'
 import { Client } from 'ssh2'
 import type { ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2'
+import SshOpenPath from './open-path.js'
 import { WorkspacePathMapper } from './paths.js'
 import { hostKeyFingerprint, normalizeFingerprint, quoteShell } from './ssh-utils.js'
 
@@ -240,6 +243,7 @@ const serverSchema: z<SshServerConfig> = z.object({
 /** One independently authenticated SSH execution world. */
 export class SshServerRuntime {
   readonly paths: WorkspacePathMapper
+  private readonly openCacheRoot: string
   private connection: Promise<Client> | undefined
   private activeClient: Client | undefined
   private sftpConnection: Promise<SFTPWrapper> | undefined
@@ -248,6 +252,7 @@ export class SshServerRuntime {
   constructor(private readonly ctx: Context, readonly config: ResolvedSshServerConfig) {
     this.validateConfig()
     this.paths = new WorkspacePathMapper(config.root, config.anchorRoot)
+    this.openCacheRoot = resolve(config.anchorRoot, '..', '.open-cache', serverSlug(config.id))
   }
 
   async initialize(): Promise<void> {
@@ -302,6 +307,46 @@ export class SshServerRuntime {
     const anchor = this.paths.toAnchor(remotePath)
     await mkdir(anchor, { recursive: true, mode: 0o700 })
     return anchor
+  }
+
+  /**
+   * Download a remote target for DSH's host-native path opener. Workspace
+   * anchors intentionally contain no files, so they cannot be opened directly
+   * by Finder, Explorer, or xdg-open. File snapshots are read-only because
+   * edits in a desktop application cannot be synchronized back over SFTP.
+   */
+  async materializeOpenPath(remotePath: string, signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted()
+    const display = this.paths.toRemote(remotePath)
+    const sftp = await this.getSftp()
+    const canonical = await this.realpath(sftp, display)
+    if (!this.paths.containsRemote(canonical)) {
+      throw new Error(`remote open target resolves outside configured root: ${display} -> ${canonical}`)
+    }
+    const attrs = await this.stat(sftp, canonical)
+    const relative = posix.relative(this.paths.remoteRoot, display)
+    const snapshot = resolve(this.openCacheRoot, ...relative.split('/').filter(Boolean))
+    if (attrs.isDirectory()) {
+      await mkdir(snapshot, { recursive: true, mode: 0o700 })
+      return snapshot
+    }
+    if (!attrs.isFile()) throw new Error(`remote open target is not a regular file: ${display}`)
+
+    await mkdir(dirname(snapshot), { recursive: true, mode: 0o700 })
+    const stage = `${snapshot}.dsh-open-${randomUUID()}.tmp`
+    try {
+      const source = sftp.createReadStream(canonical)
+      const destination = createWriteStream(stage, { mode: 0o600 })
+      if (signal === undefined) await pipeline(source, destination)
+      else await pipeline(source, destination, { signal })
+      signal?.throwIfAborted()
+      await chmod(stage, 0o400)
+      await rename(stage, snapshot)
+      return snapshot
+    } catch (error: unknown) {
+      await unlink(stage).catch(() => {})
+      throw error
+    }
   }
 
   async requireRemoteDirectory(path: string): Promise<string> {
@@ -607,6 +652,9 @@ export class SshWorkspaceRuntime extends Service {
         validate: value => { this.validateConfig(value) },
       },
     )
+    // This child waits for the API gateway without making the SSH runtime
+    // depend on it (the gateway reaches filesystem tools and would cycle).
+    ctx.plugin(SshOpenPath)
     ctx.effect(() => async () => {
       this.disposed = true
       await this.reconfigureTail.catch(() => {})

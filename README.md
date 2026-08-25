@@ -138,7 +138,7 @@ DSH registers local directories as workspaces. The plugin therefore creates one 
 ~/.dsh/ssh-workspaces/staging-password/workspace
 ```
 
-A remote session stores the host anchor as its `cwd`. Before each operation, the hybrid filesystem and subprocess providers use the canonical real path and server ID to translate it back to the remote directory. A local session retains its ordinary canonical host `cwd` and delegates to DSH's native local providers. Routing is therefore explicit and workspace-scoped rather than inferred from an absolute path that might exist in both worlds. This also normalizes aliases such as macOS `/private/tmp`. Anchors contain no source, and deleting a DSH workspace or anchor never deletes remote files.
+A remote session stores the host anchor as its `cwd`. Before each operation, the hybrid filesystem and subprocess providers use the canonical real path and server ID to translate it back to the remote directory. A local session retains its ordinary canonical host `cwd` and delegates to DSH's native local providers. Routing is therefore explicit and workspace-scoped rather than inferred from an absolute path that might exist in both worlds. This also normalizes aliases such as macOS `/private/tmp`. Anchors contain no source, and deleting a DSH workspace or anchor never deletes remote files. When a file path in a Read/Write/Edit tool row is opened with the host desktop, the plugin downloads a fresh read-only snapshot under the hidden `.open-cache` directory. Desktop edits are intentionally not synchronized back to SSH; use an SSH-aware editor for live remote editing.
 
 ## Security boundaries and limitations
 
