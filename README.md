@@ -31,7 +31,7 @@ DSH session cwd
 - Node.js `^22.19.0` or `>=24`.
 - Direct connectivity to a POSIX SSH server.
 - Remote `bash` for Bash tools and remote `rg` (ripgrep) for Glob/Grep. LSP and subagent features require their corresponding remote executables.
-- Remote `bwrap` (bubblewrap) for confined SSH Bash commands under `read-only` or `workspace-write`. File tools enforce those modes through SFTP without requiring bubblewrap. `danger-full-access` does not use it.
+- Automatic remote sandbox selection for SSH Bash under `read-only` or `workspace-write`: a functional `bwrap` probe first, then a bundled static Landlock runner on Linux x64/ARM64. File tools enforce those modes through SFTP without either process runner. `danger-full-access` does not use them.
 - On Windows hosts, local workspaces expose PowerShell while SSH workspaces continue to use Bash. PowerShell deliberately rejects an SSH-anchor working directory.
 - `~/.ssh/config`, ProxyJump, and ProxyCommand are not currently parsed.
 
@@ -87,9 +87,11 @@ DSH's search tools start a ripgrep binary packaged for the host platform. The pl
 
 ### Permission presets
 
-The bundle preserves DSH's standard presets instead of replacing them. `workspace-write` remains the default, `read-only` rejects Write/Edit and confines Bash to a read-only remote filesystem, and `danger-full-access` runs with the SSH user's authority. In `workspace-write`, remote Bash may write only inside the session workspace and its private `/tmp`; SFTP Write/Edit may write only inside the session workspace.
+The bundle preserves DSH's standard presets instead of replacing them. `workspace-write` remains the default, `read-only` rejects Write/Edit and confines Bash to a read-only remote filesystem, and `danger-full-access` runs with the SSH user's authority. In `workspace-write`, remote Bash may write only inside the session workspace and its granted temporary area; SFTP Write/Edit may write only inside the session workspace.
 
-Remote Bash confinement is enforced on the SSH server with bubblewrap. If `bwrap` is missing or cannot create its namespace, a confined Bash call fails closed with `SANDBOX_UNAVAILABLE`; it never silently retries unconfined. Install and verify it on every configured server, for example with `command -v bwrap` and a simple read-only bubblewrap probe.
+Remote Bash confinement is enforced on the SSH server. At server initialization the plugin functionally probes bubblewrap; if bubblewrap is missing or cannot create its namespace, it uploads the version-pinned DSH Landlock launcher to the SSH user's private `~/.cache/dsh-ssh-workspace` directory, verifies its SHA-256, and probes actual kernel enforcement. The bundled launcher supports Linux x64 and ARM64 and requires an enabled Landlock LSM (kernel 5.13+; the probe, not the version string, is authoritative). If neither backend works, confined Bash fails closed with `SANDBOX_UNAVAILABLE` and reports both probe failures; it never retries unconfined.
+
+Bubblewrap provides a private `/tmp` and PID namespace. Under the Landlock fallback, `workspace-write` grants the remote workspace, `/tmp`, and `/dev/null`; `/tmp` is the host's shared remote temp directory rather than a private mount. On an older supported Landlock ABI, DSH reports `enforcement: partial` instead of claiming full enforcement.
 
 ## Headless and compatibility configuration
 
@@ -142,8 +144,8 @@ A remote session stores the host anchor as its `cwd`. Before each operation, the
 
 ## Security boundaries and limitations
 
-- A server's `root` bounds file tools, directory browsing, and accepted process working directories. Under `read-only` and `workspace-write`, remote bubblewrap prevents Bash writes outside the policy roots but still permits reads outside the configured server `root`, matching DSH's file-effect-only sandbox contract. Use a dedicated low-privilege account for stronger confidentiality boundaries.
-- A host sandbox cannot confine remote processes, so the mixed sandbox translates the session anchor into a remote path and runs bubblewrap on the SSH server. Missing or unusable bubblewrap fails closed for confined Bash. On Windows, local PowerShell remains in its isolated local shell/subprocess realm and cannot target an SSH anchor.
+- A server's `root` bounds file tools, directory browsing, and accepted process working directories. Under `read-only` and `workspace-write`, the selected remote process sandbox prevents Bash writes outside the policy roots but still permits reads outside the configured server `root`, matching DSH's file-effect-only sandbox contract. Use a dedicated low-privilege account for stronger confidentiality boundaries.
+- A host sandbox cannot confine remote processes, so the mixed sandbox translates the session anchor into a remote path and selects bubblewrap or Landlock on the SSH server. If both are unusable, confined Bash fails closed. On Windows, local PowerShell remains in its isolated local shell/subprocess realm and cannot target an SSH anchor.
 - `danger-full-access` deliberately bypasses sandboxing. Local commands then have the DSH host account's authority and SSH commands have the selected SSH user's authority.
 - Atomic SFTP replace/create requires OpenSSH `posix-rename` and `hardlink` extensions. Missing extensions fail explicitly rather than silently degrading to non-atomic writes.
 - Closing an SSH channel cannot prove that deliberately daemonized remote descendants exited.

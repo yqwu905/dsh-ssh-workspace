@@ -43,6 +43,7 @@
   "files": [
     "lib/**/*.js",
     "lib/**/*.d.ts",
+    "assets",
     "cordis.patch.yml",
     "examples",
     "README.md",

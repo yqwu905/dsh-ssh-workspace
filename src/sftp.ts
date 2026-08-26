@@ -59,6 +59,13 @@ export function sftpUnlink(sftp: SFTPWrapper, path: string): Promise<void> {
   })
 }
 
+/** Rename a newly created internal file without requiring an overwrite extension. */
+export function sftpMove(sftp: SFTPWrapper, from: string, to: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    sftp.rename(from, to, error => error === undefined ? resolve() : reject(error))
+  })
+}
+
 export function sftpRename(sftp: SFTPWrapper, from: string, to: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const extension = sftp.ext_openssh_rename?.bind(sftp)

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { generateKeyPairSync } from 'node:crypto'
 import { constants } from 'node:fs'
-import { access, mkdtemp, rm } from 'node:fs/promises'
+import { access, chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -76,6 +76,17 @@ describe('loopback SSH transport', () => {
     vi.stubEnv('DSH_SSH_LOOPBACK_PASSWORD', 'secret')
     const anchorRoot = await mkdtemp(join(tmpdir(), 'dsh-ssh-loopback-anchor-'))
     const localRoot = await mkdtemp(join(tmpdir(), 'dsh-ssh-loopback-local-'))
+    const fakeBin = await mkdtemp(join(tmpdir(), 'dsh-ssh-loopback-bin-'))
+    const fakeBwrap = join(fakeBin, 'bwrap')
+    await writeFile(fakeBwrap, [
+      '#!/bin/sh',
+      'while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done',
+      '[ "$#" -gt 0 ] && shift',
+      'exec "$@"',
+      '',
+    ].join('\n'))
+    await chmod(fakeBwrap, 0o700)
+    vi.stubEnv('PATH', `${fakeBin}:${process.env.PATH ?? ''}`)
     const ctx = new Context()
     ctx.provide('sandboxPolicy', {
       defaultMode: 'workspace-write',
@@ -187,6 +198,7 @@ describe('loopback SSH transport', () => {
       await new Promise<void>(resolveClose => server.close(() => resolveClose()))
       await rm(anchorRoot, { recursive: true, force: true })
       await rm(localRoot, { recursive: true, force: true })
+      await rm(fakeBin, { recursive: true, force: true })
       vi.unstubAllEnvs()
     }
   }, 15_000)
