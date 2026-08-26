@@ -9,12 +9,18 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-credentials'
 import { dshHomePath, expandHomePath } from '@deepseek-ai/dsh-home-paths'
+import type { ConfinedArgv, SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
 import { Client } from 'ssh2'
 import type { ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2'
 import SshOpenPath from './open-path.js'
 import { WorkspacePathMapper } from './paths.js'
+import {
+  confineRemoteArgv,
+  prepareRemoteSandbox,
+  type RemoteSandboxBackend,
+} from './remote-sandbox.js'
 import { hostKeyFingerprint, normalizeFingerprint, quoteShell } from './ssh-utils.js'
 
 export const SSH_SETTINGS_NAMESPACE = 'ssh-workspace'
@@ -247,6 +253,10 @@ export class SshServerRuntime {
   private connection: Promise<Client> | undefined
   private activeClient: Client | undefined
   private sftpConnection: Promise<SFTPWrapper> | undefined
+  private remoteSandbox: RemoteSandboxBackend = {
+    kind: 'unavailable',
+    detail: 'SSH remote sandbox capability has not finished initializing',
+  }
   private disposed = false
 
   constructor(private readonly ctx: Context, readonly config: ResolvedSshServerConfig) {
@@ -271,6 +281,12 @@ export class SshServerRuntime {
     for (const workspace of this.config.workspaces) {
       const remote = await this.requireRemoteDirectory(workspace.path)
       await this.materializeAnchor(remote)
+    }
+    this.remoteSandbox = await prepareRemoteSandbox(this)
+    if (this.remoteSandbox.kind === 'unavailable') {
+      this.ctx.logger.warn(
+        `dsh-ssh-workspace: confined Bash is unavailable on server ${this.config.id}: ${this.remoteSandbox.detail}`,
+      )
     }
   }
 
@@ -359,6 +375,14 @@ export class SshServerRuntime {
     const info = await this.stat(sftp, remote)
     if (!info.isDirectory()) throw new Error(`remote path is not a directory: ${display}`)
     return remote
+  }
+
+  confineSandbox(
+    argv: readonly string[],
+    policy: SandboxPolicy,
+    remoteWorkspaceRoot: string,
+  ): ConfinedArgv {
+    return confineRemoteArgv(argv, policy, remoteWorkspaceRoot, this.remoteSandbox)
   }
 
   async execControl(command: string, signal?: AbortSignal, maxBytes = 256_000): Promise<ControlResult> {

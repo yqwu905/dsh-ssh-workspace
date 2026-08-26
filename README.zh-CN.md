@@ -31,7 +31,7 @@ DSH session cwd
 - Node.js `^22.19.0` 或 `>=24`。
 - 可直接连接的 POSIX SSH 服务器。
 - Bash 工具需要远端 `bash`；Glob/Grep 需要远端 `rg`（ripgrep）；LSP 与 subagent 还需要各自的远端可执行文件。
-- `read-only` / `workspace-write` 下的 SSH Bash 需要远端安装 `bwrap`（bubblewrap）。文件工具通过 SFTP 自行执行权限策略，不依赖 bubblewrap；`danger-full-access` 也不会调用它。
+- `read-only` / `workspace-write` 下的 SSH Bash 会自动选择远端沙箱：先真实探测 `bwrap`（bubblewrap），失败后使用随插件提供的 Linux x64/ARM64 静态 Landlock runner。文件工具通过 SFTP 自行执行权限策略，不依赖这两个进程 runner；`danger-full-access` 也不会调用它们。
 - Windows 宿主的本地工作区提供 PowerShell，SSH 工作区仍使用 Bash；PowerShell 会明确拒绝 SSH 锚点工作目录。
 - 目前不解析 `~/.ssh/config`，也不支持 `ProxyJump` / `ProxyCommand`。
 
@@ -87,9 +87,11 @@ DSH 的 Glob/Grep 使用随宿主平台打包的 ripgrep 路径。插件识别�
 
 ### 权限预设
 
-bundle 现在保留 DSH 标准权限预设，不再强制覆盖成 `danger-full-access`。默认仍是 `workspace-write`；`read-only` 会拒绝 Write/Edit，并把 Bash 放入只读远端文件系统；`danger-full-access` 则按 SSH 用户权限执行。在 `workspace-write` 下，远端 Bash 只能写当前 Session 工作区及其私有 `/tmp`，SFTP Write/Edit 只能写当前 Session 工作区。
+bundle 现在保留 DSH 标准权限预设，不再强制覆盖成 `danger-full-access`。默认仍是 `workspace-write`；`read-only` 会拒绝 Write/Edit，并把 Bash 放入只读远端文件系统；`danger-full-access` 则按 SSH 用户权限执行。在 `workspace-write` 下，远端 Bash 只能写当前 Session 工作区及获授权的临时目录，SFTP Write/Edit 只能写当前 Session 工作区。
 
-SSH Bash 的限制由服务器上的 bubblewrap 真正执行。若远端没有 `bwrap`，或它无法创建 namespace，受限 Bash 会以 `SANDBOX_UNAVAILABLE` 明确失败，不会静默降级成无约束执行。建议在每台服务器上用 `command -v bwrap` 和一个简单的只读 bubblewrap probe 预先验证。
+SSH Bash 的限制在服务器上真正执行。服务器初始化时，插件会先功能性探测 bubblewrap；若它不存在或无法创建 namespace，插件会把与 DSH 版本固定的 Landlock launcher 上传到 SSH 用户私有的 `~/.cache/dsh-ssh-workspace`，校验 SHA-256 后再探测内核是否真实启用了 Landlock。内置 launcher 支持 Linux x64 与 ARM64；Landlock 需要启用相应 LSM（内核 5.13+，但最终以 probe 结果而不是版本号为准）。若两个后端都不可用，受限 Bash 会以 `SANDBOX_UNAVAILABLE` fail-closed，并同时给出两次 probe 的原因，绝不会静默降级成无约束执行。
+
+Bubblewrap 会提供私有 `/tmp` 与 PID namespace；切换到 Landlock 时，`workspace-write` 会授权远端工作区、`/tmp` 与 `/dev/null`，其中 `/tmp` 是服务器共享的临时目录而非私有挂载。较旧但仍可用的 Landlock ABI 会由 DSH 如实标为 `enforcement: partial`。
 
 ## 无界面与兼容配置
 
@@ -142,8 +144,8 @@ DSH 工作区注册器只接受本机存在的目录。插件为每台服务器�
 
 ## 安全边界与限制
 
-- 每台服务器的 `root` 是文件工具、目录浏览和进程工作目录的路径边界。在 `read-only` / `workspace-write` 下，远端 bubblewrap 会阻止 Bash 向策略范围外写入，但仍允许读取服务器 `root` 之外的内容；这与 DSH sandbox 只约束文件写入效果的语义一致。若需要更强的保密边界，仍应使用专用低权限账号。
-- 本机 sandbox 无法约束服务器进程，因此混合 sandbox 会把 Session 锚点翻译为远端路径，并在 SSH 服务器上运行 bubblewrap。远端 bubblewrap 缺失或不可用时，受限 Bash 会 fail-closed。Windows 上的本地 PowerShell 仍运行在独立的本地 Shell/subprocess 域中，不能指向 SSH 锚点。
+- 每台服务器的 `root` 是文件工具、目录浏览和进程工作目录的路径边界。在 `read-only` / `workspace-write` 下，选中的远端进程 sandbox 会阻止 Bash 向策略范围外写入，但仍允许读取服务器 `root` 之外的内容；这与 DSH sandbox 只约束文件写入效果的语义一致。若需要更强的保密边界，仍应使用专用低权限账号。
+- 本机 sandbox 无法约束服务器进程，因此混合 sandbox 会把 Session 锚点翻译为远端路径，并在 SSH 服务器上选择 bubblewrap 或 Landlock；二者都不可用时，受限 Bash 会 fail-closed。Windows 上的本地 PowerShell 仍运行在独立的本地 Shell/subprocess 域中，不能指向 SSH 锚点。
 - `danger-full-access` 会有意绕过 sandbox：本地命令具有 DSH 宿主账号权限，SSH 命令具有所选 SSH 用户权限。
 - SFTP overwrite 使用 OpenSSH `posix-rename` 扩展，guarded create 使用 `hardlink` 扩展。缺少扩展时会明确失败，不会静默退化为非原子覆盖。
 - SSH channel 关闭不能证明故意 daemonize 的所有远端孙进程都已退出。
