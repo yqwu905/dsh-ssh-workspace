@@ -1,0 +1,62 @@
+{
+  "name": "dsh-ssh-fleet",
+  "version": "0.1.0",
+  "description": "Run DeepSeek Harness sessions on many SSH servers from one instance: model calls, plugins and skills stay on the host, files and commands run on each bound server.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./local-bridge": "./src/local-bridge.js",
+    "./package.json": "./package.json",
+    "./client": "./client/dist/client.js"
+  },
+  "files": [
+    "src",
+    "client/dist",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "ssh",
+    "remote",
+    "multi-host"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.1-rc.2 <0.3.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-fs": "*",
+    "@deepseek-ai/dsh-sandbox": "*",
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/dsh-subprocess": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-sdk-client": "0.2.1-rc.2",
+    "esbuild": "^0.25.10"
+  },
+  "scripts": {
+    "test": "node --test test/unit.test.js",
+    "test:e2e": "node --test --test-concurrency=1 test/e2e.test.js",
+    "build": "node scripts/build-client.mjs"
+  }
+}

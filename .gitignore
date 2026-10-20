@@ -1,0 +1,3 @@
+node_modules/
+# Resolved against a local dsh installation; not portable.
+package-lock.json

@@ -1,0 +1,3 @@
+- insert:
+    - id: fleet-test-command-bridge
+      name: dsh-ssh-fleet-test-command-bridge
