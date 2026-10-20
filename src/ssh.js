@@ -61,7 +61,7 @@ export class SshError extends Error {
 export class SshHost {
   /**
    * @param {HostConfig} config
-   * @param {{ controlDir: string, connectTimeoutSec: number, logger: { info: Function, warn: Function, debug?: Function } }} options
+   * @param {{ controlDir: string, connectTimeoutSec: number, helperWorkers?: number, logger: { info: Function, warn: Function, debug?: Function } }} options
    */
   constructor(config, options) {
     this.config = config
@@ -77,6 +77,7 @@ export class SshHost {
     /** @type {number | undefined} */
     this.masterPid = undefined
     this.masterCheckedAt = 0
+    this.workers = new WorkerPool(this, options.helperWorkers ?? 2)
   }
 
   /**
@@ -237,8 +238,22 @@ export class SshHost {
    * @param {{ input?: string | Buffer, signal?: AbortSignal, timeoutMs?: number }} [opts]
    * @returns {Promise<ExecResult>}
    */
-  async helper(op, args, opts) {
+  async helper(op, args, opts = {}) {
     await this.ready()
+    const input = opts.input === undefined ? undefined : Buffer.from(opts.input)
+    // Inputs a line-based worker cannot carry (NUL bytes) or would read
+    // slowly (shells read pipes byte by byte) take a one-shot connection.
+    const pooled = this.options.helperWorkers !== 0 && opts.timeoutMs === undefined
+      && (input === undefined || (input.length <= WORKER_MAX_INPUT && !input.includes(0)))
+    if (pooled) {
+      try {
+        return await this.workers.run([op, ...args], input, opts.signal)
+      } catch (error) {
+        if (!(error instanceof WorkerLostError)) throw error
+        // The op may have run before the worker died: only repeat reads.
+        if (error.maybeRan && !READ_ONLY_OPS.has(op)) return { code: 255, signal: null, stdout: Buffer.alloc(0), stderr: error.message }
+      }
+    }
     return await this.exec(['sh', this.helperPath, op, ...args], opts)
   }
 
@@ -265,9 +280,260 @@ export class SshHost {
 
   /** Close the master connection. */
   async close() {
+    this.workers.close()
     if (this.readyPromise === undefined) return
     this.readyPromise = undefined
     await runLocal('ssh', [...this.baseArgs(), '-O', 'exit', '--', this.config.host]).catch(() => {})
+  }
+}
+
+const WORKER_MAX_INPUT = 512 * 1024
+const WORKER_IDLE_MS = 300_000
+const WORKER_READY = Buffer.from('\n@@dsh-ssh-fleet-serve@@\n')
+/** Ops that may safely run again when a worker died mid-request. */
+const READ_ONLY_OPS = new Set(['info', 'resolve', 'stat', 'lstat', 'list', 'read', 'range', 'readv', 'which', 'alive', 'fg'])
+
+class WorkerLostError extends Error {
+  /** @param {string} message @param {boolean} maybeRan - whether the server may have started the op. */
+  constructor(message, maybeRan) {
+    super(message)
+    this.maybeRan = maybeRan
+  }
+}
+
+/** One request line of the `serve` protocol: "\" -> "\\", LF -> "\n". @param {Buffer} data */
+function encodeLine(data) {
+  const out = Buffer.allocUnsafe(data.length * 2 + 1)
+  let n = 0
+  for (const byte of data) {
+    if (byte === 0x5c) { out[n++] = 0x5c; out[n++] = 0x5c } else if (byte === 0x0a) { out[n++] = 0x5c; out[n++] = 0x6e } else out[n++] = byte
+  }
+  out[n++] = 0x0a
+  return out.subarray(0, n)
+}
+
+/**
+ * Long-lived `helper.sh serve` processes of one server. Every one-shot ssh
+ * command starts the account's login shell, and bash runs ~/.bashrc for
+ * commands from sshd; a worker pays that once and then runs ops from stdin.
+ */
+class WorkerPool {
+  /** @param {SshHost} host @param {number} size */
+  constructor(host, size) {
+    this.host = host
+    this.size = size
+    /** @type {Set<HelperWorker>} */
+    this.all = new Set()
+    /** @type {HelperWorker[]} */
+    this.idle = []
+    /** @type {{ resolve: (worker: HelperWorker) => void, reject: (error: unknown) => void }[]} */
+    this.waiting = []
+  }
+
+  /**
+   * @param {string[]} argv - op and its arguments.
+   * @param {Buffer | undefined} input
+   * @param {AbortSignal} [signal]
+   * @returns {Promise<ExecResult>}
+   */
+  async run(argv, input, signal) {
+    signal?.throwIfAborted()
+    const worker = await this.acquire(signal)
+    try {
+      return await worker.request(argv, input, signal)
+    } finally {
+      this.release(worker)
+    }
+  }
+
+  /** @param {AbortSignal} [signal] @returns {Promise<HelperWorker>} */
+  acquire(signal) {
+    while (this.idle.length > 0) {
+      const worker = /** @type {HelperWorker} */ (this.idle.pop())
+      if (worker.alive && worker.generation === this.host.generation) return Promise.resolve(worker)
+      worker.kill()
+    }
+    if (this.all.size < this.size) return Promise.resolve(this.spawn())
+    return new Promise((resolve, reject) => {
+      const waiter = { resolve, reject }
+      this.waiting.push(waiter)
+      signal?.addEventListener('abort', () => {
+        const index = this.waiting.indexOf(waiter)
+        if (index >= 0) this.waiting.splice(index, 1)
+        reject(signal.reason ?? new Error('aborted'))
+      }, { once: true })
+    })
+  }
+
+  spawn() {
+    const worker = new HelperWorker(this.host, () => this.forget(worker))
+    this.all.add(worker)
+    return worker
+  }
+
+  /** @param {HelperWorker} worker */
+  release(worker) {
+    if (!worker.alive) return
+    const waiter = this.waiting.shift()
+    if (waiter !== undefined) waiter.resolve(worker)
+    else {
+      this.idle.push(worker)
+      worker.idleSince(() => {
+        const index = this.idle.indexOf(worker)
+        if (index >= 0) this.idle.splice(index, 1)
+        worker.end()
+      })
+    }
+  }
+
+  /** @param {HelperWorker} worker */
+  forget(worker) {
+    this.all.delete(worker)
+    const index = this.idle.indexOf(worker)
+    if (index >= 0) this.idle.splice(index, 1)
+    const waiter = this.waiting.shift()
+    if (waiter !== undefined) waiter.resolve(this.spawn())
+  }
+
+  close() {
+    for (const waiter of this.waiting.splice(0)) waiter.reject(new WorkerLostError('connection closed', false))
+    for (const worker of this.all) worker.kill()
+  }
+}
+
+class HelperWorker {
+  /** @param {SshHost} host @param {() => void} onExit */
+  constructor(host, onExit) {
+    this.host = host
+    this.generation = host.generation
+    this.alive = true
+    this.ready = false
+    this.onExit = onExit
+    /** @type {Buffer[]} */
+    this.chunks = []
+    this.length = 0
+    /** Bytes needed before the next parse attempt. */
+    this.needed = 0
+    this.stderr = ''
+    /** @type {{ resolve: (result: ExecResult) => void, reject: (error: unknown) => void, signal?: AbortSignal, onAbort: () => void } | undefined} */
+    this.pending = undefined
+    /** @type {NodeJS.Timeout | undefined} */
+    this.timer = undefined
+    // The worker attaches to the master only; ready() keeps one running.
+    const [cmd, ...args] = host.sshArgv(['sh', host.helperPath, 'serve'], { master: false })
+    this.child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] })
+    this.child.stdout.on('data', chunk => this.onData(chunk))
+    this.child.stderr.on('data', (chunk) => { this.stderr = `${this.stderr}${chunk}`.slice(-2000) })
+    this.child.stdin.on('error', () => {})
+    this.child.on('error', error => this.lost(error.message))
+    this.child.on('close', code => this.lost(`exited with ${code}`))
+    // A login shell that never reaches the helper (a hanging ~/.bashrc).
+    this.startTimer = setTimeout(() => this.ready || this.kill(), host.options.connectTimeoutSec * 1000 + 30000)
+    this.startTimer.unref()
+  }
+
+  /**
+   * @param {string[]} argv
+   * @param {Buffer | undefined} input
+   * @param {AbortSignal} [signal]
+   * @returns {Promise<ExecResult>}
+   */
+  request(argv, input, signal) {
+    clearTimeout(this.timer)
+    return new Promise((resolve, reject) => {
+      if (!this.alive) {
+        reject(new WorkerLostError(`helper worker on ${this.host.id} is gone`, false))
+        return
+      }
+      const onAbort = () => {
+        this.pending = undefined
+        // The reply would desynchronize the stream: drop this worker.
+        this.kill()
+        reject(signal?.reason ?? new Error('aborted'))
+      }
+      this.pending = { resolve, reject, signal, onAbort }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      const lines = [Buffer.from(`${argv.length} ${input === undefined ? 0 : 1}\n`), ...argv.map(arg => encodeLine(Buffer.from(arg)))]
+      if (input !== undefined) lines.push(encodeLine(input))
+      this.child.stdin.write(Buffer.concat(lines))
+    })
+  }
+
+  /** @param {Buffer} chunk */
+  onData(chunk) {
+    this.chunks.push(chunk)
+    this.length += chunk.length
+    if (this.length < this.needed) return
+    let buffer = this.chunks.length === 1 ? this.chunks[0] : Buffer.concat(this.chunks)
+    if (!this.ready) {
+      // Skip whatever the login shell printed before the helper started.
+      const index = buffer.indexOf(WORKER_READY)
+      if (index < 0) {
+        buffer = buffer.subarray(Math.max(0, buffer.length - WORKER_READY.length))
+        this.chunks = [buffer]
+        this.length = buffer.length
+        return
+      }
+      buffer = buffer.subarray(index + WORKER_READY.length)
+      this.ready = true
+      clearTimeout(this.startTimer)
+    }
+    while (this.pending !== undefined) {
+      const eol = buffer.indexOf(0x0a)
+      if (eol < 0) break
+      const [code, outBytes, errBytes] = buffer.subarray(0, eol).toString('latin1').trim().split(/\s+/).map(Number)
+      if (![code, outBytes, errBytes].every(Number.isInteger)) {
+        this.kill()
+        return
+      }
+      const end = eol + 1 + outBytes + errBytes
+      if (buffer.length < end) {
+        this.needed = end
+        break
+      }
+      const stdout = Buffer.from(buffer.subarray(eol + 1, eol + 1 + outBytes))
+      const stderr = buffer.subarray(eol + 1 + outBytes, end).toString('utf8')
+      buffer = buffer.subarray(end)
+      this.needed = 0
+      const pending = this.pending
+      this.pending = undefined
+      pending.signal?.removeEventListener('abort', pending.onAbort)
+      pending.resolve({ code, signal: null, stdout, stderr })
+    }
+    this.chunks = buffer.length === 0 ? [] : [buffer]
+    this.length = buffer.length
+  }
+
+  /** @param {() => void} expire */
+  idleSince(expire) {
+    clearTimeout(this.timer)
+    this.timer = setTimeout(expire, WORKER_IDLE_MS)
+    this.timer.unref()
+  }
+
+  /** Let the worker finish: EOF ends its loop. */
+  end() {
+    this.child.stdin.end()
+  }
+
+  kill() {
+    if (this.alive) this.child.kill('SIGTERM')
+    this.lost('stopped')
+  }
+
+  /** @param {string} reason */
+  lost(reason) {
+    if (!this.alive) return
+    this.alive = false
+    clearTimeout(this.timer)
+    clearTimeout(this.startTimer)
+    const pending = this.pending
+    this.pending = undefined
+    if (pending !== undefined) {
+      pending.signal?.removeEventListener('abort', pending.onAbort)
+      pending.reject(new WorkerLostError(`helper worker on ${this.host.id} ${reason}: ${this.stderr.trim()}`, this.ready))
+    }
+    this.onExit()
   }
 }
 

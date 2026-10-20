@@ -51,6 +51,7 @@ export class HostEntry {
     this.ssh = new SshHost(config, {
       controlDir: fleet.controlDir,
       connectTimeoutSec: fleet.config.connectTimeoutSec,
+      helperWorkers: fleet.config.helperWorkers,
       logger: fleet.logger,
     })
     this.fs = new RemoteFs(this.ssh)

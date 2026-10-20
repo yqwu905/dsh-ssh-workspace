@@ -312,6 +312,43 @@ case $op in
     rm -f -- "$RUN/$1"
     ;;
 
+  serve)
+    # serve: run ops read from stdin until EOF. The login shell (and its
+    # ~/.bashrc, which bash runs for every ssh command) starts once per
+    # worker instead of once per op.
+    # Request: "<argc> <has-input>\n", then argc lines (op first) and, with
+    #   input, one more line; each line escapes "\" as "\\" and LF as "\n".
+    # Reply:   "<exit> <stdout bytes> <stderr bytes>\n", stdout, stderr.
+    # Anything the login shell printed precedes the ready line.
+    tmp=$(mktemp -d "$STATE/serve.XXXXXX") || exit 17
+    trap 'rm -rf -- "$tmp"' EXIT
+    trap 'exit 1' HUP INT TERM
+    printf '\n@@dsh-ssh-fleet-serve@@\n'
+    while IFS= read -r hdr; do
+      set -- $hdr
+      n=$1; inp=$2
+      set --
+      while [ "$n" -gt 0 ]; do
+        IFS= read -r line || exit 0
+        case $line in
+          *\\*) line=$(printf '%bx' "$line"); line=${line%x} ;;
+        esac
+        set -- "$@" "$line"
+        n=$((n - 1))
+      done
+      in=/dev/null
+      if [ "$inp" = 1 ]; then
+        IFS= read -r line || exit 0
+        printf '%b' "$line" > "$tmp/in"
+        in=$tmp/in
+      fi
+      sh "$0" "$@" < "$in" > "$tmp/out" 2> "$tmp/err"
+      code=$?
+      printf '%s %s %s\n' "$code" $(wc -c < "$tmp/out") $(wc -c < "$tmp/err")
+      cat -- "$tmp/out" "$tmp/err"
+    done
+    ;;
+
   *)
     echo "dsh-ssh-fleet helper: unknown op '$op'" >&2
     exit 64

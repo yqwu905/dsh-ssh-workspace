@@ -115,6 +115,7 @@ dsh plugin --profile web add /path/to/dsh-ssh-fleet      # 本地目录
 | `proxy.enabled` / `allow` / `allowPrivate` / `upstream` | `false` / `[]` / `false` / `''` | 宿主代理：开关；目标白名单（`*.suffix`、`*`）；是否允许解析到 loopback、内网、链路本地的目标；上游代理（`''` 直连，`env` 用主机环境变量，或填 `http://` URL） |
 | `uploadRipgrep` | `true` | 服务器没有 rg 且与主机平台相同时，上传主机的 rg |
 | `connectTimeoutSec` | `15` | SSH 连接超时（秒） |
+| `helperWorkers` | `2` | 每台服务器常驻的 helper 进程数，文件操作经由它们执行，登录 shell 的启动脚本只运行一次（见下文"连接"）；`0` 表示每次操作单独执行一条 ssh 命令 |
 | `controlDir` | `/tmp/dsh-sf-<uid>` | ControlMaster socket 目录。必须是当前用户私有的目录，路径要足够短（socket 路径上限约 104 字节） |
 | `hostPaths` | `[]` | 远端会话中仍留在主机处理的路径前缀（默认已包含 dsh 的输出溢出目录 `<tmpdir>/dsh-subprocess-*`、`<tmpdir>/dsh-spill-*`） |
 
@@ -190,7 +191,10 @@ dsh 原有的权限模式（read-only、workspace-write、danger-full-access）�
   - 主机端接口（`/api/ssh-fleet.*`）注册在 Web 连接的 fetch 路由上，继承 dsh Web 端的 Host/Origin 校验和登录 Cookie，只有所有者可以访问。
 - **远端文件系统**：连接时把 `src/remote/helper.sh` 上传到 `~/.cache/dsh-ssh-fleet/`（按内容哈希命名），所有文件操作都通过它完成：路径规范化、stat、列目录、按版本做条件写入（临时文件加 `mv`，新建文件用 `ln` 原子发布）。语义与 `dsh-fs-local` 对齐：UTF-8 与二进制判定、CRLF 保留、过期版本拒绝。远端 target key 带服务器前缀，同一路径在不同服务器上不会冲突。
 - **远端进程**：通过本地 subprocess provider 启动 `ssh` 客户端，因此输出收集、溢出文件、超时、后台任务等语义与本地完全一致。远端 wrapper 用 `setsid` 建立独立进程组并记录 pgid。客户端会一直保持 stdin 打开作为"生命线"，客户端一旦消失，远端就清理整个进程组。`terminate` 和 `job_kill` 会显式向远端进程组发送 TERM，宽限期后再发 KILL。持久终端使用 `ssh -tt`，关闭时由 pty 挂断回收远端会话。
-- **连接**：每台服务器一个 OpenSSH ControlMaster（`ControlPersist=600`），单次操作开销约 10 到 20 ms。
+- **连接**：每台服务器一个 OpenSSH ControlMaster（`ControlPersist=600`）。
+  - sshd 用账号的登录 shell 执行每一条远程命令，而 bash 对 sshd 启动的命令也会执行 `/etc/bash.bashrc` 和 `~/.bashrc`（zsh 会执行 `~/.zshenv`）。启动脚本复杂的服务器上，每条命令都要多花几百毫秒甚至几秒。
+  - 因此文件操作（stat、列目录、读写、查找命令等）不再每次单独执行 ssh 命令，而是交给每台服务器最多 `helperWorkers` 个常驻的 `helper.sh serve` 进程。启动脚本只在进程启动时运行一次，之后每次操作约 30 ms，与启动脚本的复杂度无关。启动脚本打印的内容会被跳过，不影响协议。
+  - 常驻进程空闲 5 分钟后退出。它意外断开时，只读操作改用单独的 ssh 命令重试，写操作报连接失败，避免重复写入。
   - master 只由插件自己创建；命令和终端的 ssh 客户端只复用它，不会充当 master。
   - 所有客户端都关闭了转义字符（`EscapeChar=none`），终端里的 `~.` 等输入不会被 ssh 客户端截获。
   - master 丢失（断网、服务器重启、空闲超时）会被检测到，随后自动重连，并重建代理转发等初始化。
@@ -201,6 +205,7 @@ dsh 原有的权限模式（read-only、workspace-write、danger-full-access）�
 - PTC（`run_code`、`workflow`）worker 需要主机运行时，始终在主机的私有目录里运行。它发起的工具调用和派生的 Agent 仍会按会话路由到服务器。
 - 远端文件不支持 watch：Web 文件面板不会自动刷新远端改动，需要手动点刷新。面板上显示的路径是主机上的锚点路径。
 - 主机打包的可执行文件（例如 node_modules 里的 language server）在远端会按同名命令查找。所以 LSP 要求服务器上已安装对应的 language server。
+- 模型执行的命令、终端和后台任务仍然各自启动一次登录 shell，所以每条命令还是会运行一次 `~/.bashrc`。如果服务器上的 `~/.bashrc` 很慢，建议在文件开头加上 Ubuntu 默认的判断 `case $- in *i*) ;; *) return;; esac`，让非交互命令直接跳过。
 - 远端账号的登录 shell 需要兼容 POSIX 引号（bash、zsh、sh、dash 均可）；连接时检测到 csh、tcsh、fish 会直接报错。
 - 远端程序被信号杀死时，报告为退出码 `128+N`，不填 `signal` 字段（与在 `bash -c` 里观察到的一致）。
 - read 工具为了统计总行数会读完整个文件。远端读取是流式的，内存占用有界，但大文件仍会完整传输一遍。

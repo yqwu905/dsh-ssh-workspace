@@ -36,6 +36,7 @@ export const HostConfig = z.object({
  * @property {{ enabled: boolean, allow: string[], allowPrivate: boolean, upstream: string }} proxy
  * @property {boolean} uploadRipgrep
  * @property {number} connectTimeoutSec
+ * @property {number} helperWorkers
  * @property {string} [controlDir]
  * @property {string[]} hostPaths
  * @property {number} diffBasisMaxBytes
@@ -62,6 +63,7 @@ export const Config = z.object({
   }).default({}),
   uploadRipgrep: z.boolean().default(true).description('Upload the host ripgrep binary to servers that lack rg (same OS/arch only).'),
   connectTimeoutSec: z.natural().default(15),
+  helperWorkers: z.natural().default(2).description('Long-lived helper processes per server for file operations, so the login shell (~/.bashrc) starts once instead of per operation. 0 = one ssh command per operation.'),
   controlDir: z.string().description('Directory for ssh ControlMaster sockets. Defaults to <tmpdir>/dsh-ssh-fleet-<uid>.'),
   hostPaths: z.array(z.string()).default([]).description('Extra host path prefixes that stay on the host in remote sessions.'),
   diffBasisMaxBytes: z.natural().default(4 * 1024 * 1024),
