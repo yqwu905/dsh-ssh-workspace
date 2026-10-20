@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, test } from 'node:test'
 import { startMockLlm, toolResults } from './mock-llm.js'
@@ -116,6 +116,22 @@ describe('dsh-ssh-fleet end to end', { skip, timeout: 240000 }, () => {
       assert.deepEqual(resultsFor(mock, 'anchored TASK'), ['WHO alice /home/alice/proj/anchored dir'])
       assert.equal(await session.getWorkingDirectory(), '/home/alice/proj/anchored dir')
     })
+  })
+
+  test('remote sessions read the host global AGENTS.md', async () => {
+    const file = join(HOME, 'AGENTS.md')
+    writeFileSync(file, 'HOST-GLOBAL-INSTRUCTIONS-7f3a\n')
+    try {
+      await withHarness(() => [{ text: 'done' }], async (harness, mock) => {
+        const session = harness.session()
+        await session.setWorkingDirectory(anchor('web1'))
+        await session.run('global TASK')
+        const request = mock.requests.find(r => Array.isArray(r.tools) && r.tools.length > 0 && userText(r).includes('global TASK'))
+        assert.match(JSON.stringify(request ?? {}), /HOST-GLOBAL-INSTRUCTIONS-7f3a/)
+      })
+    } finally {
+      rmSync(file, { force: true })
+    }
   })
 
   test('/ssh binds, switches and returns a session', async () => {

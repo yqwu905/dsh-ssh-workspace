@@ -63,6 +63,7 @@ errno_of() {
   return 17
 }
 
+dispatch() {
 op=${1:-}
 [ $# -gt 0 ] && shift
 
@@ -80,6 +81,13 @@ case $op in
 
   resolve)
     canon "$1"
+    ;;
+
+  probe)
+    # probe <path>: the stat line (empty when missing), then the canonical path.
+    c=$(canon "$1")
+    if [ -e "$c" ]; then st "$c" || echo; else echo; fi
+    printf '%s\n' "$c"
     ;;
 
   stat)
@@ -213,6 +221,10 @@ case $op in
     i=$n
     while [ "$i" -gt 0 ]; do eval "set -- \"\$e_$i\" \"\$@\""; i=$((i - 1)); done
     cd -- "$cwd" 2>/dev/null || { printf 'dsh-ssh-fleet: cannot change directory to %s\n' "$cwd" >&2; exit 126; }
+    # The login shell exec'd us with SHLVL lowered to 0, so a "bash -c" child
+    # would count as sshd's top-level shell and run ~/.bashrc again. Commands
+    # run below a shell, as they do locally.
+    case ${SHLVL:-} in ''|0|-*) SHLVL=1; export SHLVL ;; esac
     if [ "$mode" = data ]; then
       IFS= read -r len || len=0
       in=$(mktemp "$RUN/in.XXXXXX") || exit 17
@@ -312,6 +324,23 @@ case $op in
     rm -f -- "$RUN/$1"
     ;;
 
+  warm)
+    # warm: a channel opened ahead of time. The login shell has already run;
+    # the "run" arguments arrive on stdin (count line, then escaped lines as
+    # in "serve"), and the rest of stdin belongs to "run".
+    IFS= read -r n || exit 0
+    set --
+    while [ "$n" -gt 0 ]; do
+      IFS= read -r line || exit 0
+      case $line in
+        *\\*) line=$(printf '%bx' "$line"); line=${line%x} ;;
+      esac
+      set -- "$@" "$line"
+      n=$((n - 1))
+    done
+    dispatch run "$@"
+    ;;
+
   serve)
     # serve: run ops read from stdin until EOF. The login shell (and its
     # ~/.bashrc, which bash runs for every ssh command) starts once per
@@ -342,9 +371,12 @@ case $op in
         printf '%b' "$line" > "$tmp/in"
         in=$tmp/in
       fi
-      sh "$0" "$@" < "$in" > "$tmp/out" 2> "$tmp/err"
+      # A subshell: the op's exit and variables stay inside it.
+      ( dispatch "$@" ) < "$in" > "$tmp/out" 2> "$tmp/err"
       code=$?
-      printf '%s %s %s\n' "$code" $(wc -c < "$tmp/out") $(wc -c < "$tmp/err")
+      wc -c "$tmp/out" "$tmp/err" > "$tmp/len"
+      { read -r ob _; read -r eb _; } < "$tmp/len"
+      printf '%s %s %s\n' "$code" "$ob" "$eb"
       cat -- "$tmp/out" "$tmp/err"
     done
     ;;
@@ -354,3 +386,6 @@ case $op in
     exit 64
     ;;
 esac
+}
+
+dispatch "$@"

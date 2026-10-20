@@ -77,7 +77,11 @@ export class SshHost {
     /** @type {number | undefined} */
     this.masterPid = undefined
     this.masterCheckedAt = 0
+    /** Bumped by every operation that may change files on the server. */
+    this.mutations = 0
     this.workers = new WorkerPool(this, options.helperWorkers ?? 2)
+    /** @type {(() => void)[]} Called when the connection is closed. */
+    this.closeHooks = []
   }
 
   /**
@@ -240,6 +244,30 @@ export class SshHost {
    */
   async helper(op, args, opts = {}) {
     await this.ready()
+    if (READ_ONLY_OPS.has(op)) return await this.runHelper(op, args, opts)
+    this.mutated()
+    try {
+      return await this.runHelper(op, args, opts)
+    } finally {
+      this.mutated()
+    }
+  }
+
+  /**
+   * Note that files on the server may have changed (a write, a command):
+   * cached metadata taken before this point is no longer trusted.
+   */
+  mutated() {
+    this.mutations += 1
+  }
+
+  /**
+   * @param {string} op
+   * @param {readonly string[]} args
+   * @param {{ input?: string | Buffer, signal?: AbortSignal, timeoutMs?: number }} opts
+   * @returns {Promise<ExecResult>}
+   */
+  async runHelper(op, args, opts) {
     const input = opts.input === undefined ? undefined : Buffer.from(opts.input)
     // Inputs a line-based worker cannot carry (NUL bytes) or would read
     // slowly (shells read pipes byte by byte) take a one-shot connection.
@@ -281,6 +309,7 @@ export class SshHost {
   /** Close the master connection. */
   async close() {
     this.workers.close()
+    for (const hook of this.closeHooks) hook()
     if (this.readyPromise === undefined) return
     this.readyPromise = undefined
     await runLocal('ssh', [...this.baseArgs(), '-O', 'exit', '--', this.config.host]).catch(() => {})
@@ -291,7 +320,7 @@ const WORKER_MAX_INPUT = 512 * 1024
 const WORKER_IDLE_MS = 300_000
 const WORKER_READY = Buffer.from('\n@@dsh-ssh-fleet-serve@@\n')
 /** Ops that may safely run again when a worker died mid-request. */
-const READ_ONLY_OPS = new Set(['info', 'resolve', 'stat', 'lstat', 'list', 'read', 'range', 'readv', 'which', 'alive', 'fg'])
+const READ_ONLY_OPS = new Set(['info', 'resolve', 'probe', 'stat', 'lstat', 'list', 'read', 'range', 'readv', 'which', 'alive', 'fg'])
 
 class WorkerLostError extends Error {
   /** @param {string} message @param {boolean} maybeRan - whether the server may have started the op. */
@@ -301,8 +330,8 @@ class WorkerLostError extends Error {
   }
 }
 
-/** One request line of the `serve` protocol: "\" -> "\\", LF -> "\n". @param {Buffer} data */
-function encodeLine(data) {
+/** One request line of the `serve`/`warm` protocol: "\" -> "\\", LF -> "\n". @param {Buffer} data */
+export function encodeLine(data) {
   const out = Buffer.allocUnsafe(data.length * 2 + 1)
   let n = 0
   for (const byte of data) {

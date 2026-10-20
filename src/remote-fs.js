@@ -11,6 +11,14 @@ import { posix } from 'node:path'
 import { FsError, FsTargetKey, FsVersion } from '@deepseek-ai/dsh-fs'
 
 const BINARY_SAMPLE_BYTES = 8192
+/**
+ * How long resolve/stat answers are reused. dsh probes the same paths
+ * several times while assembling one request (working directory, .git and
+ * instruction files), each a round trip here; any write or command through
+ * this plugin drops the cache at once, so the window only covers changes made
+ * on the server by others.
+ */
+const METADATA_TTL_MS = 1000
 const KEY_PREFIX = 'ssh-fleet://'
 
 /** Exit codes of helper.sh mapped to FsError codes. */
@@ -126,12 +134,35 @@ function parseStat(line) {
   return { type, size: Number.isFinite(size) ? size : undefined, version: FsVersion(line.slice(second + 1)) }
 }
 
+/** `stat()` result of a parsed stat line. @param {ReturnType<typeof parseStat>} info */
+function statOf(info) {
+  return { version: info.version, type: info.type === 'symlink' ? 'other' : info.type, ...info.size !== undefined && info.type === 'file' ? { size: info.size } : {} }
+}
+
 export class RemoteFs {
   /**
    * @param {import('./ssh.js').SshHost} host
    */
   constructor(host) {
     this.host = host
+    /** @type {Map<string, { at: number, mutations: number, value: any }>} */
+    this.metadata = new Map()
+  }
+
+  /** @param {string} key */
+  cached(key) {
+    const entry = this.metadata.get(key)
+    if (entry === undefined) return undefined
+    if (entry.mutations === this.host.mutations && performance.now() - entry.at < METADATA_TTL_MS) return entry
+    this.metadata.delete(key)
+    return undefined
+  }
+
+  /** @param {string} key @param {any} value @param {number} mutations - counter read before the request. */
+  remember(key, value, mutations) {
+    if (mutations !== this.host.mutations) return
+    if (this.metadata.size > 1000) this.metadata.clear()
+    this.metadata.set(key, { at: performance.now(), mutations, value })
   }
 
   /**
@@ -182,18 +213,30 @@ export class RemoteFs {
    * @param {AbortSignal} [signal]
    */
   async resolve(absolutePath, signal) {
-    const result = await this.call('resolve', [absolutePath], 'resolve', absolutePath, { signal })
-    const canonical = result.stdout.toString('utf8').replace(/\n$/, '')
-    if (!canonical.startsWith('/')) throw new FsError(`cannot resolve "${absolutePath}": unexpected helper output`, 'FS_IO_ERROR')
+    const hit = this.cached(`r:${absolutePath}`)
+    if (hit !== undefined) return this.target(hit.value)
+    // One round trip answers the stat that almost always follows.
+    const mutations = this.host.mutations
+    const result = await this.call('probe', [absolutePath], 'resolve', absolutePath, { signal })
+    const output = result.stdout.toString('utf8')
+    const eol = output.indexOf('\n')
+    const canonical = output.slice(eol + 1).replace(/\n$/, '')
+    if (eol < 0 || !canonical.startsWith('/')) throw new FsError(`cannot resolve "${absolutePath}": unexpected helper output`, 'FS_IO_ERROR')
+    const line = output.slice(0, eol).trim()
+    this.remember(`r:${absolutePath}`, canonical, mutations)
+    this.remember(`s:${canonical}`, line === '' ? undefined : statOf(parseStat(line)), mutations)
     return this.target(canonical)
   }
 
   /** @param {{ displayPath: string }} target @param {AbortSignal} [signal] */
   async stat(target, signal) {
+    const hit = this.cached(`s:${target.displayPath}`)
+    if (hit !== undefined) return hit.value
+    const mutations = this.host.mutations
     const result = await this.call('stat', [target.displayPath], 'stat', target.displayPath, { signal, allow: [10] })
-    if (result.code === 10) return undefined
-    const info = parseStat(result.stdout.toString('utf8').trim())
-    return { version: info.version, type: info.type === 'symlink' ? 'other' : info.type, ...info.size !== undefined && info.type === 'file' ? { size: info.size } : {} }
+    const stat = result.code === 10 ? undefined : statOf(parseStat(result.stdout.toString('utf8').trim()))
+    this.remember(`s:${target.displayPath}`, stat, mutations)
+    return stat
   }
 
   /** @param {string} absolutePath @param {AbortSignal} [signal] */

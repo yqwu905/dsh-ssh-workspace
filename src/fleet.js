@@ -198,6 +198,11 @@ export class Fleet extends Service {
     this.hostRuntimeDir = mkdtempSync(join(tmpdir(), 'dsh-ssh-fleet-rt-'))
     const skillRoots = config.mirrorSkills ? [join(config.dshHome, 'skills'), join(config.agentsHome, 'skills')] : []
     this.mirrors = new MirrorManager([...skillRoots, ...config.mirrors], config.mirrorCheckIntervalMs, this.logger)
+    // The host's dsh and agents homes (global AGENTS.md and the like) are the
+    // one configuration every server shares, so they are read on the host;
+    // mirrored roots and anchors inside them still name server paths.
+    this.configHomes = [config.dshHome, config.agentsHome].map(p => resolve(p))
+    this.configHomeExceptions = [...skillRoots, ...config.mirrors, config.anchorsDir].filter(p => p !== '').map(p => resolve(p))
     /** @type {Map<string, HostEntry>} */
     this.hosts = new Map()
     /** @type {WeakMap<object, { next: number, binding: Binding | null | undefined }>} */
@@ -410,7 +415,9 @@ export class Fleet extends Service {
    */
   isHostOwned(path) {
     const normalized = resolve(path)
-    return this.hostPrefixes.some(prefix => normalized.startsWith(prefix)) && existsSync(normalized)
+    if (this.hostPrefixes.some(prefix => normalized.startsWith(prefix)) && existsSync(normalized)) return true
+    const within = (/** @type {string} */ root) => normalized === root || normalized.startsWith(`${root}/`)
+    return this.configHomes.some(within) && !this.configHomeExceptions.some(within)
   }
 
   /**

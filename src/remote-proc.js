@@ -6,7 +6,9 @@
  * pipes keep the local provider's exact semantics. The remote side runs the
  * helper's `run` wrapper, which places the program in its own process group,
  * records that group, and kills it when the client disappears (the client
- * keeps the channel's stdin open as a lifeline). Terminals use `ssh -tt` on a
+ * keeps the channel's stdin open as a lifeline). Channels are opened one
+ * command ahead (helper op `warm`) so the login shell has already started when
+ * the command arrives on stdin. Terminals use `ssh -tt` on a
  * local PTY; closing it hangs up the remote session.
  * @module dsh-ssh-fleet/remote-proc
  */
@@ -14,7 +16,7 @@
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { SubprocessExecutableNotFoundError } from '@deepseek-ai/dsh-subprocess'
-import { HELPER_HASH } from './ssh.js'
+import { encodeLine, HELPER_HASH } from './ssh.js'
 
 /** Runs the uploaded helper without knowing $HOME on the host side. */
 const HELPER_BOOTSTRAP = 'h="$HOME/.cache/dsh-ssh-fleet/helper-' + HELPER_HASH + '.sh"; '
@@ -22,6 +24,10 @@ const HELPER_BOOTSTRAP = 'h="$HOME/.cache/dsh-ssh-fleet/helper-' + HELPER_HASH +
   + 'exec sh "$h" "$@"'
 
 const CONTROL_CHARS = { SIGINT: '\x03', SIGTSTP: '\x1a' }
+
+/** Channels opened ahead of time stay this long, at most this many per server. */
+const WARM_IDLE_MS = 120_000
+const WARM_MAX = 2
 
 /**
  * Turn an explicit env map into helper entries: `-u NAME` tombstones first,
@@ -52,6 +58,70 @@ export class RemoteProc {
     this.host = host
     this.local = local
     this.hooks = hooks
+    /**
+     * Opened channels waiting for their command, by local spawn shape. Opening
+     * a channel starts the account's login shell (and its ~/.bashrc), so the
+     * next command's channel is opened while the model is still thinking.
+     * @type {Map<string, { handle: any, settled: boolean, generation: number, timer: NodeJS.Timeout }>}
+     */
+    this.warm = new Map()
+    host.closeHooks.push(() => {
+      for (const entry of this.warm.values()) {
+        clearTimeout(entry.timer)
+        entry.handle.terminate()
+      }
+      this.warm.clear()
+    })
+  }
+
+  /**
+   * A local ssh client whose remote side waits for "run" arguments on stdin.
+   * @param {{ stdio: any, graceMs: number }} shape
+   */
+  openChannel(shape) {
+    return this.local().spawn({
+      argv: this.host.sshArgv(['sh', '-c', HELPER_BOOTSTRAP, 'sh', 'warm'], { master: false }),
+      cwd: homedir(),
+      ...shape,
+      signal: undefined,
+    })
+  }
+
+  /** @param {{ stdio: any, graceMs: number }} shape */
+  takeWarm(shape) {
+    const key = JSON.stringify(shape)
+    const entry = this.warm.get(key)
+    if (entry === undefined) return undefined
+    this.warm.delete(key)
+    clearTimeout(entry.timer)
+    if (!entry.settled && entry.generation === this.host.generation) return entry.handle
+    entry.handle.terminate()
+    return undefined
+  }
+
+  /** @param {{ stdio: any, graceMs: number }} shape */
+  prewarm(shape) {
+    const key = JSON.stringify(shape)
+    if (this.warm.has(key) || this.warm.size >= WARM_MAX) return
+    const handle = this.openChannel(shape)
+    handle.stdin?.on('error', () => {})
+    const entry = {
+      handle,
+      settled: false,
+      generation: this.host.generation,
+      timer: setTimeout(() => {
+        if (this.warm.get(key) !== entry) return
+        this.warm.delete(key)
+        handle.terminate()
+      }, WARM_IDLE_MS),
+    }
+    entry.timer.unref?.()
+    const settle = () => {
+      entry.settled = true
+      if (this.warm.get(key) === entry) this.warm.delete(key)
+    }
+    handle.done.then(settle, settle)
+    this.warm.set(key, entry)
   }
 
   /**
@@ -83,18 +153,15 @@ export class RemoteProc {
     const mode = stdin === 'ignore' ? 'ignore' : stdin === 'pipe' ? 'pipe' : 'data'
     const graceSec = Math.max(1, Math.ceil(spec.graceMs / 1000))
     const argv = [this.hooks.mapExecutable(spec.argv[0]), ...spec.argv.slice(1)]
-    const remote = ['sh', '-c', HELPER_BOOTSTRAP, 'sh', 'run', id, mode, String(graceSec), spec.cwd,
-      ...envEntries(spec.env, this.hooks.extraEnv()), '--', ...argv]
+    const runArgs = [id, mode, String(graceSec), spec.cwd, ...envEntries(spec.env, this.hooks.extraEnv()), '--', ...argv]
     // Keep the shared master (and its forwards) alive for later commands;
     // this client itself only joins an existing master or connects directly.
     this.hooks.ensureReady()
-    const local = this.local().spawn({
-      argv: this.host.sshArgv(remote, { master: false }),
-      cwd: homedir(),
-      stdio: { stdin: 'pipe', stdout: spec.stdio.stdout, stderr: spec.stdio.stderr },
-      graceMs: spec.graceMs,
-      signal: undefined,
-    })
+    this.host.mutated()
+    const shape = { stdio: { stdin: 'pipe', stdout: spec.stdio.stdout, stderr: spec.stdio.stderr }, graceMs: spec.graceMs }
+    const local = this.takeWarm(shape) ?? this.openChannel(shape)
+    local.stdin?.write(Buffer.concat([Buffer.from(`${runArgs.length}\n`), ...runArgs.map(arg => encodeLine(Buffer.from(arg)))]))
+    this.prewarm(shape)
     const host = this.host
     const logger = this.hooks.logger
     let terminated = false
@@ -118,6 +185,7 @@ export class RemoteProc {
       local.terminate()
     }
     const done = local.done.finally(() => {
+      host.mutated()
       // The lifeline is no longer needed once the client is gone.
       if (mode !== 'pipe') local.stdin?.destroy()
     })
@@ -165,6 +233,7 @@ export class RemoteProc {
    */
   async spawnTerminal(spec) {
     await this.host.ready()
+    this.host.mutated()
     const id = randomUUID().replaceAll('-', '').slice(0, 16)
     const argv = [this.hooks.mapExecutable(spec.argv[0]), ...spec.argv.slice(1)]
     const remote = ['sh', '-c', HELPER_BOOTSTRAP, 'sh', 'term', id, spec.cwd,
