@@ -61,7 +61,7 @@ declare const zh: {
     readonly sandboxError: "检测失败";
     readonly sandboxFull: "完整约束";
     readonly sandboxPartial: "部分约束";
-    readonly sandboxHint: "只读后端预检，命令仍须通过运行时检查。自动安装的 Linux Helper 自带 bubblewrap 和 Landlock，仍需内核/容器允许其运行；Host 需自行具备沙箱能力。macOS 使用系统 sandbox-exec。修复远程后断开重连；修复 Host 后重启 DSH。";
+    readonly sandboxHint: "只读后端预检，命令仍须通过运行时检查。失败时展开详情查看各后端的退出码和原始错误；自动安装可补齐运行器，内核/容器能力需由部署环境提供。修复远程后断开重连；修复 Host 后重启 DSH。";
     readonly noWorkspaces: "此服务器还没有工作区。";
     readonly noSessions: "此工作区还没有对话。";
     readonly selectServer: "选择服务器";

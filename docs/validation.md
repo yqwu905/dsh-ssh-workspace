@@ -2,7 +2,7 @@
 
 日期：2026-10-22。基线：DSH npm latest `0.2.1-rc.2`，官方 master `687f282e8625c6b8d11ff58211a90524be2e4317`。Node v24.19.0，Linux x64。
 
-插件版本：0.2.4。此次重跑 typecheck、build、unit/SSHFS/连接生命周期/沙箱诊断回归、Web smoke 和真实 SSH 自动安装验收。一般 SSH 传输结果沿用 0.2.0；本次重新验证完整 Linux x64 runtime 的 SSH 传输与安装。没有验证用户服务器的实际内核/容器能力。
+插件版本：0.2.5。此次重跑 typecheck、build、unit/SSHFS/连接生命周期/沙箱诊断回归、Web smoke 和真实 SSH 自动安装验收。一般 SSH 传输结果沿用 0.2.0；本次重新验证完整 Linux x64 runtime 的 SSH 传输与安装。没有验证用户服务器的实际内核/容器能力。
 
 ## 已完成
 
@@ -10,15 +10,17 @@
 |---|---|
 | `npm run typecheck` | 严格 TypeScript 检查通过 |
 | `npm run build` | host ESM、browser 懒加载 CJS factory、声明文件生成通过 |
-| `npm test` | 49/49 通过；设置 `SSHFS_TEST_BINARY` 指向实际 SSHFS 3.7.3。默认从 PATH 查找，未安装时仅真实解析测试 skip。结果摘要保存在 `test-results.txt` |
-| 自带 bubblewrap | 官方 0.13.1 源码、Zig 0.15.2 musl、固定 libcap 2.78-r1 SDK 构建 Linux x64/arm64 静态 PIE；无 PT_INTERP、无动态库 DT_NEEDED、无 setuid/setgid。两架构均重新构建并逐字节匹配摘要；x64 实际执行 `--version`，arm64 未在目标硬件执行 |
-| 官方 provider 路径适配 | 修改前校验官方源码摘要。实际适配后的 provider 在受控探针回复下覆盖内置 bwrap、系统 bwrap、Landlock partial、全部拒绝四种结果；原 profile/策略/错误类型保留，探测与返回 argv 固定同一绝对路径。该测试不代表当前内核允许创建 namespace |
+| `npm test` | 54/54 通过；设置 `SSHFS_TEST_BINARY` 指向实际 SSHFS 3.7.3。默认从 PATH 查找，未安装时仅真实解析测试 skip。结果摘要保存在 `test-results.txt` |
+| 自带 bubblewrap | 官方 0.13.1 源码、Zig 0.15.2 musl、固定 libcap 2.78-r1 SDK 构建 Linux x64/arm64 静态 PIE；无 PT_INTERP、无动态库 DT_NEEDED、无 setuid/setgid。0.2.4 已对两架构重新构建并逐字节匹配摘要，本次未改动二进制；x64 实际执行 `--version`，arm64 未在目标硬件执行 |
+| 官方 provider 路径适配 | 修改前校验官方源码摘要。实际适配后的 provider 在受控探针回复下覆盖内置 bwrap、系统 bwrap、Landlock full/partial、全部拒绝、系统 bwrap 缺失、ENOENT/EACCES、超时、输出截断；原 profile/策略/错误类型保留，探测与返回 argv 固定同一绝对路径。该测试不代表当前内核允许创建 namespace |
 | 沙箱诊断回归 | 官方 SSH provider 重复包装的错误可定位到远程；Host 故障单独显示。不可用时连接/项目指令读取仍可用、没有 process RPC；检查接口返回失败详情，断开清除诊断、重连重新检测；运行态诊断不写入严格配置。路由保留 `workspace-write`、`SANDBOX_UNAVAILABLE` 与原因链，不回退；只读预检保留 partial、超时有界 |
+| 0.2.5 探针错误详情 | 官方 provider 和 Landlock JS 输入分别固定 SHA-256；保留同一次探针的 stderr/退出码/信号/启动错误、平台/内核/euid，去除终端控制字符并限长。错误通过官方 SshRpcPeer/SshSandboxProvider 保留到 Manager/Web 数据；重复调用不新增探针、无执行权限扩大 |
+| 实际安装包功能探针 | 在真实 OpenSSH + SSH2 fixture 安装后的 Node/provider 中调用 read-only confine；本测试环境返回 bwrap `Creating new namespace failed: Operation not permitted` 与 Landlock `ABI unsupported or disabled`，完整详情保留。未执行项目命令、未放宽内核或容器限制。这是测试环境的结果，不是 Ascend55 的探针结果 |
 | 首轮对话离线回归 | 使用真实 Manager、已发布的 SshConnection/SSH providers/RPC framing，SSH 子进程由内存流替代。修复前复现相同 pending request limit/error 状态；修复后验证慢心跳重叠时读取项目指令成功、128 个普通 RPC 满载不误报离线、真实流断开后拒绝访问与重连、慢状态检查不重叠及旧连接检查不污染重连 |
 | SSHFS 参数回归 | 真实 SSHFS 3.7.3 / libfuse 3.14.0 重现 `ForwardAgent=no` 错误；修复后只有有意添加的探针选项被拒绝，避免尝试挂载/连接。真实 OpenSSH `-G` 验证禁止 agent 转发、严格 host key、BatchMode、keepalive 以及 alias 的 HostName/User/Port/ProxyJump 保留 |
 | `npm run test:ssh` | 4 pass、1 skip（Node 统计包括父测试）；真实 OpenSSH client 与非特权 SSH2 fixture 完成加密连接、并行 cwd、反向 TCP SSE；Manager 连接失败后没有泄露可用 provider |
 | `npm run test:web` | 真实已发布 dsh Web profile 启动；401 未登录、403 不可信 Origin、登录后 SSH config API、无 helper 字段的自动模式、手动模式 CRUD、browser module discovery 通过 |
-| `npm run test:install` | 0.2.4 重跑 6/6 通过（含父测试）；真实 OpenSSH + SSH2 fixture：旧 runtime 入口自动迁移、完整安装及原生模块加载、内置 bwrap 实际执行、重连复用不上传、篡改 bwrap 后新目录重装、截断/错误摘要拒绝、后台 Manager 状态与配置持久化；远端禁用 ambient node/npm/curl/wget |
+| `npm run test:install` | 0.2.5 重跑 6/6 通过（含父测试）；真实 OpenSSH + SSH2 fixture：旧 runtime 入口自动迁移、完整安装及原生模块加载、内置 bwrap 实际执行、实际只读后端探针失败信息、重连复用不上传、篡改 bwrap 后新目录重装、截断/错误摘要拒绝、后台 Manager 状态与配置持久化；远端禁用 ambient node/npm/curl/wget |
 | 跨平台依赖准备 | Host 上对 Linux arm64、macOS x64/arm64 分别执行锁定的目标平台 `npm ci --ignore-scripts`，确认对应 PTY/system/Koffi 原生资源存在；未在这些远端平台执行运行包 |
 | SSH 配置导入 | 嵌套/通配 Include、多别名、去重、循环引用、通配/否定过滤、缺失配置、错误提示及不返回私钥内容通过 |
 | Helper archive 部署 | checksum、manifest、路径穿越/链接/模式拒绝测试通过；模拟 SSH 传输下的安装 shell 验证通过 |

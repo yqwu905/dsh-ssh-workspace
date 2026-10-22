@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 const vendor = fileURLToPath(new URL('../runtime/vendor/bubblewrap/', import.meta.url))
 export const SANDBOX_LOCAL_SHA256 = 'be6e1107871cf8d94c040090b13c405bc833822e2f51ed5280e93eececf762be'
+export const LANDLOCK_JS_SHA256 = 'a0f04e2990b6fff091d6776c41e56dac8c630a37b944632e743fa8f2ee9c4813'
 const digest = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex')
 
 /** Reject wrong-architecture or dynamically linked artifacts before uploading them. */
@@ -39,23 +40,57 @@ export function adaptSandboxSource(source: string): string {
   const probe = source.slice(start, end)
   const invocation = 'case "bwrap": return ["bwrap", ...bwrapProfileArgs(policy)];'
   if (start < 0 || end <= start || !probe.includes('return spawnSync("bwrap", [') || !source.includes(invocation)) throw new Error('Unexpected sandbox-local runner layout')
-  const body = probe.replace('return spawnSync("bwrap", [', 'const usable = spawnSync(candidate, [').slice('function defaultProbeBwrap(timeoutMs) {'.length, -1)
-  const replacement = `function defaultProbeBwrap(timeoutMs) {
+  const body = probe.replace('return spawnSync("bwrap", [', 'const result = spawnSync(candidate, [')
+    .replace('stdio: "ignore"', 'stdio: ["ignore", "ignore", "pipe"], encoding: "utf8", maxBuffer: 16384')
+    .replace('}).status === 0;', '});').slice('function defaultProbeBwrap(timeoutMs) {'.length, -1)
+  const replacement = `function defaultProbeBwrap(timeoutMs, record) {
   const system = (process.env.PATH ?? '').split(':').filter(part => part.startsWith('/')).map(part => __dshSshJoin(part, 'bwrap')).find(path => {
     try { __dshSshAccess(path, 1); return __dshSshStat(path).isFile(); } catch { return false; }
   });
+  if (!system) record('System bubblewrap: no executable bwrap found on the helper PATH.');
   for (const candidate of [...new Set([__dshSshBundledBwrap, system].filter(Boolean))]) {
 ${body}
-    if (usable) { __dshSshSelectedBwrap = candidate; return true; }
+    if (result.status === 0) { __dshSshSelectedBwrap = candidate; return true; }
+    record(__dshSshProbeDetail(candidate === __dshSshBundledBwrap ? 'Bundled bubblewrap' : 'System bubblewrap', candidate, result));
   }
   return false;
 }`
   return `import { fileURLToPath as __dshSshFilePath } from 'node:url';
 import { join as __dshSshJoin } from 'node:path';
 import { accessSync as __dshSshAccess, statSync as __dshSshStat } from 'node:fs';
+import { release as __dshSshKernel } from 'node:os';
+import { stripVTControlCharacters as __dshSshStripVT } from 'node:util';
 const __dshSshBundledBwrap = __dshSshFilePath(new URL('../../../../tools/bin/bwrap', import.meta.url));
 let __dshSshSelectedBwrap = __dshSshBundledBwrap;
-` + source.replace(probe, replacement).replace(invocation, 'case "bwrap": return [__dshSshSelectedBwrap, ...bwrapProfileArgs(policy)];')
+function __dshSshClean(value, limit = 2048) {
+  const text = __dshSshStripVT(String(value ?? '')).replace(/[\\x00-\\x1f\\x7f-\\x9f]/g, ' ').trim();
+  return text.length > limit ? text.slice(0, limit) + ' [truncated]' : text;
+}
+function __dshSshProbeDetail(label, path, result) {
+  const info = ['exit=' + (result.status ?? 'none')];
+  if (result.signal) info.push('signal=' + __dshSshClean(result.signal, 64));
+  if (result.error) info.push('error=' + __dshSshClean(result.error.code, 64) + ' ' + __dshSshClean(result.error.message, 512));
+  info.push('stderr=' + (__dshSshClean(result.stderr) || '(empty)'));
+  return label + ' (' + __dshSshClean(path, 512) + '): ' + info.join('; ');
+}
+function __dshSshProbeReport(details) {
+  if (details.length === 0) return undefined;
+  return 'Managed helper sandbox probes: ' + process.platform + '-' + process.arch + ', kernel=' + __dshSshClean(__dshSshKernel(), 256)
+    + ', euid=' + (process.geteuid?.() ?? 'unknown') + '\\n' + details.join('\\n');
+}
+` + source.replace(probe, replacement)
+    .replace(invocation, 'case "bwrap": return [__dshSshSelectedBwrap, ...bwrapProfileArgs(policy)];')
+    .replace('\n\tselectedRunner;', '\n\tselectedRunner;\n\t__dshSshProbeDiagnostics = [];')
+    .replace('defaultProbeBwrap(this.probeTimeoutMs)', 'defaultProbeBwrap(this.probeTimeoutMs, (detail) => this.__dshSshProbeDiagnostics.push(detail))')
+    .replace('probe(launcher, { timeoutMs: this.probeTimeoutMs })', 'probe(launcher, { timeoutMs: this.probeTimeoutMs, onProbeResult: (result) => { if (result.status !== 0) this.__dshSshProbeDiagnostics.push(__dshSshProbeDetail("Landlock", launcher, result)); } })')
+    .replace('throw new SandboxUnavailableError(mode);', 'throw new SandboxUnavailableError(mode, __dshSshProbeReport(this.__dshSshProbeDiagnostics));')
+}
+
+/** Preserve the upstream probe verdict/parser; expose the same spawn's failure facts. */
+export function adaptLandlockSource(source: string): string {
+  if (digest(Buffer.from(source)) !== LANDLOCK_JS_SHA256) throw new Error('Unsupported Landlock source; update and review the pinned adapter before upgrading DSH')
+  return source.replace("stdio: ['ignore', 'pipe', 'ignore'],", "stdio: ['ignore', 'pipe', 'pipe'],\n        maxBuffer: 16384,")
+    .replace('    if (result.status !== 0)', '    options.onProbeResult?.(result);\n    if (result.status !== 0)')
 }
 
 export async function installBundledSandbox(payload: string, target: string): Promise<void> {
@@ -72,5 +107,7 @@ export async function installBundledSandbox(payload: string, target: string): Pr
   await writeFile(join(payload, 'tools/bubblewrap.json'), JSON.stringify({ version: manifest.version, target, sha256: expected.sha256 }))
   for (const name of ['NOTICE.md', 'LICENSE-bubblewrap', 'LICENSE-musl', 'LICENSE-libcap', 'LICENSE-zig']) await copyFile(join(vendor, name), join(payload, 'tools', name))
   const provider = join(payload, 'node_modules/@deepseek-ai/dsh-sandbox-local/lib/index.js')
+  const landlock = join(payload, 'node_modules/@deepseek-ai/node-addon-system/lib/index.js')
+  await writeFile(landlock, adaptLandlockSource(await readFile(landlock, 'utf8')))
   await writeFile(provider, adaptSandboxSource(await readFile(provider, 'utf8')))
 }

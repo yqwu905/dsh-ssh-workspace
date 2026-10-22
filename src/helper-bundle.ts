@@ -34,7 +34,7 @@ export async function sha256(path: string): Promise<string> {
 export function isTarget(value: string): value is Target { return Object.hasOwn(NODE_SHA256, value) }
 
 export async function bundleKey(target: Target): Promise<string> {
-  const hash = createHash('sha256').update(`managed-runtime-v2:${target}:${NODE_SHA256[target]}`)
+  const hash = createHash('sha256').update(`managed-runtime-v3:${target}:${NODE_SHA256[target]}`)
   for (const name of ['package.json', 'package-lock.json', 'verify.mjs', ...['manifest.json', 'NOTICE.md', 'LICENSE-bubblewrap', 'LICENSE-musl', 'LICENSE-libcap', 'LICENSE-zig'].map(name => `vendor/bubblewrap/${name}`)]) hash.update(await readFile(join(runtimeDirectory, name)))
   return `${DSH_VERSION}-${target}-${hash.digest('hex').slice(0, 20)}`
 }

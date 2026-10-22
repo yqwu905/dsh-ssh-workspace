@@ -22,6 +22,28 @@
 
 预检只调用官方 `confine`，请求 `read-only` 并丢弃返回的 argv，不执行项目命令，也不授予根目录写权限。Linux 官方实现会在这一步功能探测 bubblewrap/Landlock；部分平台的单一后端在真正执行时才验证。因此“已选择后端”不是每条命令都会成功的保证，`partial` 也不会显示成完整约束。每条命令仍遵循原策略和运行时检查。
 
+## 只有通用错误，没有后端原因
+
+0.2.4 及更早版本的探针丢弃了 stderr，所以 `cannot prepare sandbox mode "read-only"` 只能说明没有选出可用后端，不能单凭这句话断定是没装 bubblewrap、旧内核还是容器权限。
+
+0.2.5 修复了这个信息缺失：自动管理的 Linux Helper 从**同一轮实际探针**保留退出码、终止信号、启动错误和 stderr，并附上远程平台、内核版本、有效 UID。在 Web 中打开 **检查连接与沙箱 → 远程沙箱 → 详情**，复制 `Managed helper sandbox probes:` 开始的各行即可排查。报告中的路径为该 Helper 实际探测的二进制，不依赖用户自行猜 runtime 路径。
+
+更新插件、重启 DSH，并断开重连自动模式服务器后会自动部署新版 Helper。仅刷新 Web 或点击检查仍可能使用旧 Helper/缓存的探针结果。没有上述详情标记时，先检查是否确实升级并重连、是否仍处于手动模式。Host 的原生 provider 未打补丁，不一定提供同样的细节。
+
+错误输出有长度上限、去除终端控制字符，重复调用复用已缓存的诊断，不会为每次检查额外启动探针。原有 `full`/`partial`/`unusable` 判定、只读 profile 和 `SANDBOX_UNAVAILABLE` 类型保留。预检等待预算增至 20 秒，覆盖 Linux 最多三个候选各 5 秒的默认探针预算；SSH 自身配置的请求超时仍生效。
+
+| 具体详情 | 如何判断与处理 |
+|---|---|
+| `bwrap: ... Operation not permitted` / namespace 创建失败 | 运行器已经启动，当前环境拒绝相关操作。检查该 SSH 账户所在环境的 namespace、容器策略及系统日志；这行本身不能区分 seccomp、AppArmor 或其他权限配置 |
+| `landlock is not enforced by this kernel (ABI unsupported or disabled)` | 原生启动器没有获得可用 Landlock ABI；内核未实现/未启用或系统调用受限制均需核实，不能只根据内核版本判断 |
+| Landlock `ruleset error` | 已进入规则创建/约束流程，结合后面的具体系统错误检查 |
+| 启动 `EACCES` | 检查实际二进制的执行权限、安装目录所在文件系统的 `noexec` 和访问策略 |
+| 启动 `ENOENT` | 检查报告路径、架构/动态加载器；文件存在但加载器缺失也可能无法启动。内置静态 bwrap 不需要动态加载器 |
+| `ETIMEDOUT` / 终止信号 | 探针未正常完成；检查进程/系统负载和部署限制，不能据此认定内核不支持 |
+| `System bubblewrap: no executable ...` | 仅说明 PATH 没有另一个系统 bwrap；自动 Helper 已有自己的 bwrap，应同时查看内置 bwrap 和 Landlock 两行 |
+
+这些信息用于明确下一步修复位置。自动安装用户态运行器不能改变内核功能或管理员设置的容器限制；升级诊断本身也不代表 Ascend55 等目标服务器已恢复沙箱运行。
+
 ## Linux 的恢复方式
 
 在上表确定的执行环境中检查，而不是仅在浏览器电脑或容器宿主机的另一个账户下检查：
@@ -45,12 +67,13 @@ bwrap --ro-bind / / -- /bin/true
 DSH_SSH_RUNTIME='/absolute/path/to/the/installed/runtime'
 cd "$DSH_SSH_RUNTIME"
 ./tools/bin/bwrap --version
-# 最小只读探针，便于保留具体的 namespace/权限错误：
-./tools/bin/bwrap --ro-bind / / -- /bin/true
-./node/bin/node --input-type=module -e 'import { launcherPath, probe } from "@deepseek-ai/node-addon-system/landlock-run"; console.log({launcher: launcherPath(), enforcement: probe()})'
+# DSH 的只读 profile，便于保留具体的 namespace/权限错误：
+./tools/bin/bwrap --ro-bind / / --dev /dev --unshare-pid --proc /proc --die-with-parent -- /bin/true
+# 保留原生探针 stderr；旧版 probe() 包装会丢弃它：
+./node/bin/node --input-type=module -e 'import { launcherPath } from "@deepseek-ai/node-addon-system/landlock-run"; import { spawnSync } from "node:child_process"; const launcher = launcherPath(); const r = spawnSync(launcher, ["--probe"], { encoding: "utf8", timeout: 5000, maxBuffer: 16384 }); console.log({ launcher, status: r.status, signal: r.signal, error: r.error?.message, stdout: r.stdout, stderr: r.stderr });'
 ```
 
-结果为 `full`、`partial` 或 `unusable`；后者也可能来自启动器不可执行、系统库不匹配或探针超时，需结合系统日志判断。手动 Helper 应使用其实际依赖和运行时路径。不要改动只读 runtime 的文件或摘要。
+原生 Landlock 探针成功退出时 stdout 会报告 `fully enforced` 或 `partially enforced`；失败时结合 stderr、退出码和启动错误判断。不可用也可能来自启动器不可执行、系统库不匹配或探针超时。手动 Helper 应使用其实际依赖和运行时路径。不要改动只读 runtime 的文件或摘要。
 
 修复远程后，停止正在使用该服务器的任务，在面板**断开、重新连接并挂载原工作区**；修复 Host 后**重启 DSH Web**。官方 provider 缓存后端选择，单点“检查”不会重启 helper。无需删除 workspace、对话或远程项目。
 

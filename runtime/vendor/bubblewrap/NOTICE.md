@@ -29,9 +29,16 @@ These licenses apply to the bundled components independently of the plugin's
 MIT license. You may rebuild and replace these components; update the pinned
 manifest digests accordingly before preparing a new helper payload.
 
-The adapter in `src/helper-sandbox.ts` changes only the pinned DSH provider's
+The adapter in `src/helper-sandbox.ts` changes the pinned DSH provider's
 bwrap discovery and executable path. It probes the bundled runner, then an
 existing system bwrap if available, using the original DSH read-only profile.
 The upstream Landlock fallback, sandbox modes and enforcement metadata remain
 unchanged. The selected bwrap path is absolute, so a tool's PATH cannot replace
 the probed executable when the command starts. macOS keeps native sandbox-exec.
+
+Since plugin 0.2.5, the adapter also captures bounded stderr, exit status and
+spawn failures from those same probes. It adapts the pinned Landlock JavaScript
+wrapper to report its spawn result without altering the verdict/parser or the
+native launcher. Both input JavaScript files are SHA-256 checked before changes.
+Failure details include platform, kernel release and effective UID; no extra
+probe processes are spawned. The resulting failure remains SANDBOX_UNAVAILABLE.

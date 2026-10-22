@@ -17,7 +17,7 @@ import { installFsRouting } from '../src/fs-routing.js'
 
 /** Real published SshConnection, providers and RPC framing; only the SSH child
  * transport is replaced by in-memory streams, so no AF_UNIX/FUSE is required. */
-async function fixture(t: TestContext, options: { hostUnavailable?: boolean; remoteUnavailable?: boolean } = {}) {
+async function fixture(t: TestContext, options: { hostUnavailable?: boolean; remoteUnavailable?: boolean; remoteDetail?: string } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-ssh-lifecycle-'))
   await writeFile(join(directory, 'AGENTS.md'), 'Remote project instructions')
   const host = new Context(), remote = new Context()
@@ -57,7 +57,7 @@ async function fixture(t: TestContext, options: { hostUnavailable?: boolean; rem
       if (method === 'heartbeat') { await heartbeatGate.promise; return null }
       if (method === 'sandbox') {
         assert.equal(params.policy.mode, 'read-only')
-        if (!sandboxAvailable) throw new SandboxUnavailableError(params.policy.mode)
+        if (!sandboxAvailable) throw new SandboxUnavailableError(params.policy.mode, options.remoteDetail)
         return facts(params.argv)
       }
       if (method === 'executable') return '/usr/bin/rg'
@@ -111,17 +111,20 @@ async function fixture(t: TestContext, options: { hostUnavailable?: boolean; rem
 }
 
 test('unavailable remote sandbox is visible before chat while SSH files remain usable', async t => {
-  const f = await fixture(t, { remoteUnavailable: true })
+  const detail = 'Managed helper sandbox probes: linux-arm64, kernel=fixture, euid=1000\nBundled bubblewrap: exit=1; stderr=bwrap: Operation not permitted\nLandlock: exit=125; stderr=landlock is not enforced by this kernel'
+  const f = await fixture(t, { remoteUnavailable: true, remoteDetail: detail })
   const server = f.manager.state().servers[0]!
   assert.equal(server.status, 'connected')
   assert.equal(server.sandboxChecks?.host.status, 'selected')
   assert.equal(server.sandboxChecks?.remote.status, 'unavailable')
   assert.match(server.sandboxChecks!.remote.message, /SSH server fixture/u)
   assert.doesNotMatch(server.sandboxChecks!.remote.message, /Runner failure:/u)
+  assert.ok(server.sandboxChecks!.remote.message.includes(detail), 'all probe lines survive the official SSH error wrapper')
   assert.equal(await f.readProject(), 'Remote project instructions')
   const result = await f.manager.probe(f.id)
   assert.equal(result.ok, false)
   assert.match(result.message, /SSH connected, sandbox preflight failed: remote/u)
+  assert.ok(f.manager.state().servers[0]!.sandboxChecks!.remote.message.includes(detail))
   assert.equal(f.manager.state().servers[0]!.status, 'connected')
   assert.ok(!f.methods.some(method => method.startsWith('process.')))
   // Ephemeral diagnostics must not enter the strict persisted-state schema.

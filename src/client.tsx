@@ -37,7 +37,7 @@ const zh = {
   save: '保存', cancel: '取消', edit: '编辑', remove: '删除', connect: '连接', disconnect: '断开',
   probe: '检查连接与沙箱', noServers: '添加第一台服务器，然后连接并添加远程目录。',
   sandboxHost: 'Host 沙箱', sandboxRemote: '远程沙箱', sandboxSelected: '已选择后端', sandboxUnavailable: '后端不可用', sandboxError: '检测失败',
-  sandboxFull: '完整约束', sandboxPartial: '部分约束', sandboxHint: '只读后端预检，命令仍须通过运行时检查。自动安装的 Linux Helper 自带 bubblewrap 和 Landlock，仍需内核/容器允许其运行；Host 需自行具备沙箱能力。macOS 使用系统 sandbox-exec。修复远程后断开重连；修复 Host 后重启 DSH。',
+  sandboxFull: '完整约束', sandboxPartial: '部分约束', sandboxHint: '只读后端预检，命令仍须通过运行时检查。失败时展开详情查看各后端的退出码和原始错误；自动安装可补齐运行器，内核/容器能力需由部署环境提供。修复远程后断开重连；修复 Host 后重启 DSH。',
   noWorkspaces: '此服务器还没有工作区。', noSessions: '此工作区还没有对话。',
   selectServer: '选择服务器', selectedServer: '当前服务器', remotePath: '远程目录绝对路径', title: '工作区名称',
   addWorkspace: '添加工作区', mount: '挂载', unmount: '卸载', open: '打开', newSession: '新建对话',
@@ -81,7 +81,7 @@ const en: Record<keyof typeof zh, string> = {
   save: 'Save', cancel: 'Cancel', edit: 'Edit', remove: 'Delete', connect: 'Connect', disconnect: 'Disconnect',
   probe: 'Check connection and sandbox', noServers: 'Add your first server, connect, then add a remote directory.',
   sandboxHost: 'Host sandbox', sandboxRemote: 'Remote sandbox', sandboxSelected: 'Backend selected', sandboxUnavailable: 'Backend unavailable', sandboxError: 'Check failed',
-  sandboxFull: 'Full enforcement', sandboxPartial: 'Partial enforcement', sandboxHint: 'Read-only backend preflight; runtime checks still apply. Managed Linux helpers bundle bubblewrap and Landlock, subject to kernel/container permissions. The Host needs its own backend. macOS uses system sandbox-exec. Reconnect after repairing the remote; restart DSH after repairing the Host.',
+  sandboxFull: 'Full enforcement', sandboxPartial: 'Partial enforcement', sandboxHint: 'Read-only backend preflight; runtime checks still apply. Expand failure details for per-backend exit codes and errors. Automatic setup supplies runners; kernel/container support comes from the deployment. Reconnect after repairing the remote; restart DSH after repairing the Host.',
   noWorkspaces: 'This server has no workspaces yet.', noSessions: 'This workspace has no conversations yet.',
   selectServer: 'Select server', selectedServer: 'Selected server', remotePath: 'Remote directory absolute path', title: 'Workspace name',
   addWorkspace: 'Add workspace', mount: 'Mount', unmount: 'Unmount', open: 'Open', newSession: 'New conversation',
@@ -222,7 +222,7 @@ function SandboxStatus({ checks, t }: { checks: SandboxChecks; t: T }) {
           {check.backend && ` · ${check.backend}`}
           {check.enforcement && ` · ${t(check.enforcement === 'full' ? 'sandboxFull' : 'sandboxPartial')}`}
         </span>
-        {check.status !== 'selected' && <details><summary>{t('inspectDetails')}</summary><p style={s.code}>{check.message}</p></details>}
+        {check.status !== 'selected' && <details><summary>{t('inspectDetails')}</summary><p style={{ ...s.code, whiteSpace: 'pre-wrap' }}>{check.message}</p></details>}
       </div>
     })}
     <p style={s.muted}>{t('sandboxHint')}</p>

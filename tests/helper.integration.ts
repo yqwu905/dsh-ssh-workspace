@@ -100,6 +100,24 @@ test('automatic helper installation through real OpenSSH', { timeout: 1_200_000 
         assert.equal((await sshCommand('helper-test', `${q(binary)} --version`)).trim(), 'bubblewrap 0.13.1')
         validateStaticElf(await readFile(binary), process.arch as 'x64' | 'arm64')
         assert.match(await readFile(join(runtime, 'node_modules/@deepseek-ai/dsh-sandbox-local/lib/index.js'), 'utf8'), /__dshSshSelectedBwrap/u)
+        assert.match(await readFile(join(runtime, 'node_modules/@deepseek-ai/node-addon-system/lib/index.js'), 'utf8'), /onProbeResult/u)
+        // Exercise real probes in the installed helper's environment. Do not
+        // execute the returned argv or require this test host to allow a runner.
+        const script = `import {Context} from '@deepseek-ai/cordis';
+import {LocalSandboxProvider} from '@deepseek-ai/dsh-sandbox-local';
+const ctx = new Context(); await ctx.plugin(LocalSandboxProvider);
+try { const result = await ctx.sandbox.confine(['/bin/true'], {mode:'read-only', workspaceRoot:'/'});
+console.log(JSON.stringify({enforcement:result.enforcement})); }
+catch (error) { console.log(JSON.stringify({code:error.code,message:error.message})); }
+finally { await ctx.fiber.dispose(); }`
+        const probe = JSON.parse(await sshCommand('helper-test', `cd ${q(runtime)} && ${q(installed.launch.node)} --input-type=module -e ${q(script)}`))
+        if (probe.code) {
+          assert.equal(probe.code, 'SANDBOX_UNAVAILABLE')
+          assert.match(probe.message, /Managed helper sandbox probes: linux-.*kernel=/u)
+          assert.match(probe.message, /Bundled bubblewrap.*exit=.*stderr=/u)
+          assert.match(probe.message, /Landlock.*exit=.*stderr=/u)
+          t.diagnostic(probe.message.slice(probe.message.indexOf('Managed helper sandbox probes:')))
+        } else assert.ok(['full', 'partial'].includes(probe.enforcement))
       }
     })
     await t.test('reconnect reuses verified deployment without retransmission', async () => {

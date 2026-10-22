@@ -27,11 +27,9 @@ export function sandboxError(error: unknown, policy: SandboxPolicy, location: st
   }
   const result = new SandboxUnavailableError(policy.mode)
   result.message = `${location}: cannot prepare sandbox mode "${policy.mode}". `
-    + 'On the machine executing this command, Linux needs usable bubblewrap or an enforcing Landlock kernel; macOS needs usable sandbox-exec. '
-    + 'Managed Linux helpers include bubblewrap and Landlock; when both are unusable, check kernel/container permissions. Host or manual installations may still need a runner. '
-    + 'The command was not executed; the sandbox policy was not changed. '
-    + 'Use SSH Workspaces > Check connection and sandbox, then reconnect after repairing the backend.'
-    + (detail ? ` Detail: ${detail}` : '')
+    + 'The command was not executed; the sandbox policy was not changed.\n'
+    + (detail ? `Detail: ${detail}\n` : 'No backend probe details were supplied. Linux needs usable bubblewrap or an enforcing Landlock kernel; macOS needs usable sandbox-exec. For managed Linux helpers, update the plugin and reconnect to obtain per-backend errors.\n')
+    + 'Use SSH Workspaces > Check connection and sandbox > Details. Reconnect after repairing the remote backend; restart DSH after repairing the Host.'
   result.cause = error
   Object.defineProperty(result, contextualized, { value: true })
   return result
@@ -43,7 +41,8 @@ export function sandboxError(error: unknown, policy: SandboxPolicy, location: st
  * spawn the returned argv, grant writes, or infer that every command will work.
  */
 export async function checkSandbox(
-  provider: Pick<SandboxProvider, 'confine'>, workspaceRoot: string, location: string, timeoutMs = 10_000,
+  // Three Linux candidates can each use the upstream 5-second probe budget.
+  provider: Pick<SandboxProvider, 'confine'>, workspaceRoot: string, location: string, timeoutMs = 20_000,
 ): Promise<SandboxCheck> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(new Error('Sandbox preflight timed out')), timeoutMs)

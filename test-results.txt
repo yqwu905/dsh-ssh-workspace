@@ -1,18 +1,30 @@
-DSH SSH Workspaces 0.2.4 — verification summary
+DSH SSH Workspaces 0.2.5 — verification summary
 Date: 2026-10-22
 Node: v24.19.0 / Linux x64
 Upstream: @deepseek-ai/dsh 0.2.1-rc.2
 Commit: 687f282e8625c6b8d11ff58211a90524be2e4317
 
 npm run typecheck: PASS
-npm test: 49 tests, 49 pass, 0 fail, 0 skip
+npm test: 54 tests, 54 pass, 0 fail, 0 skip
           SSHFS_TEST_BINARY points to Ubuntu SSHFS 3.7.3 / libfuse 3.14.0
 npm run test:ssh (0.2.0 baseline): 5 tests (including parent), 4 pass, 0 fail, 1 skip
-npm run test:install (rerun in 0.2.4): 6 tests (including parent), 6 pass, 0 fail, 0 skip
+npm run test:install (rerun in 0.2.5): 6 tests (including parent), 6 pass, 0 fail, 0 skip
 npm run build: PASS
 npm run test:web: PASS
 
-0.2.4 bundled sandbox observations:
+0.2.5 probe diagnostic observations:
+PASS per-runner exit, signal, ENOENT/EACCES, ETIMEDOUT and stderr retained
+PASS Landlock full/partial and bubblewrap selection unchanged; failure remains typed
+PASS bounded output and terminal control stripping; cached calls spawn no new probes
+PASS original SSH RPC/provider wrapping preserves multiline failure details in Manager
+PASS installed runtime's real read-only probe over OpenSSH reports this test host:
+     kernel 6.18.55 / linux-x64 / euid 0
+     bundled/system bwrap: exit 1, Creating new namespace failed: Operation not permitted
+     Landlock: exit 125, ABI unsupported or disabled
+These errors describe the test environment, not the user's Ascend55 server.
+No project command was executed and no kernel/container restrictions were changed.
+
+0.2.4 bundled sandbox observations (binary/build baseline unchanged):
 PASS official bubblewrap 0.13.1 source SHA-256 and libcap SDK APK hashes pinned
 PASS x64 + arm64 static PIE built with Zig 0.15.2; repeated clean builds match
      SHA-256 byte for byte; old-kernel fallback code retained (assume_kernel unset)
@@ -26,7 +38,7 @@ PASS macOS does not install the Linux runner
 ARM64 binary was built and inspected, NOT executed on ARM64 hardware.
 No old-kernel or production namespace/container enforcement claim is made.
 
-0.2.3 sandbox diagnostics regressions (rerun in 0.2.4):
+0.2.3 sandbox diagnostics regressions (rerun in 0.2.5):
 PASS remote SandboxUnavailableError through the official SSH provider is
      de-duplicated and retains SANDBOX_UNAVAILABLE, mode and original cause
 PASS Host / remote failures have distinct execution locations
@@ -38,7 +50,7 @@ PASS diagnostics stay out of persisted config and are refreshed on reconnect
 Uses published SSH sandbox provider/protocol with an in-memory transport and
 controlled backend replies. Does not certify a real remote sandbox or kernel.
 
-0.2.2 connection lifecycle regressions (rerun in 0.2.4):
+0.2.2 connection lifecycle regressions (rerun in 0.2.5):
 REPRODUCED before fix: overlapping native/plugin heartbeat makes Manager error
            with the exact "SSH helper pending request limit reached" message
 PASS one native heartbeat remains outstanding across UI checks; routed project
@@ -51,7 +63,7 @@ Uses published SshConnection/providers/SshRpcPeer and real Manager/FS routing.
 Only the SSH subprocess transport is replaced with in-memory streams; this is
 not a production sshd, FUSE mount or actual LLM conversation test.
 
-SSHFS regression observations (rerun in 0.2.4):
+SSHFS regression observations (rerun in 0.2.5):
 PASS actual SSHFS/FUSE parser reproduces rejected ForwardAgent=no
 PASS corrected arguments leave only the intentionally invalid probe option
      rejected; fuse_new fails before any mount or SSH connection attempt
@@ -76,7 +88,7 @@ PASS auto-mode server registration with no helper/Node/hash fields
 PASS server create/read/delete through native Web host
 PASS browser plugin module appears in DSH boot payload
 
-Auto-helper integration observations (rerun in 0.2.4;
+Auto-helper integration observations (rerun in 0.2.5;
 real OpenSSH + unprivileged SSH2 fixture):
 PASS locked npm dependency closure and verified official Node downloaded on Host
 PASS complete Linux x64 payload transferred and installed through SSH stdin

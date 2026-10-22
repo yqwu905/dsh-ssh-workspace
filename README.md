@@ -1,6 +1,6 @@
 # DSH SSH Workspaces
 
-面向 **DeepSeek Harness 0.2.1-rc.2** 的 Web 插件。2026-10-22 核对 npm `latest` 与官方源码，基线提交为 `687f282e8625c6b8d11ff58211a90524be2e4317`。当前为 **0.2.4 测试版**；完整真实 SSHFS 挂载验收仍需要具有 FUSE 权限的机器，详见 [测试记录](docs/validation.md)。
+面向 **DeepSeek Harness 0.2.1-rc.2** 的 Web 插件。2026-10-22 核对 npm `latest` 与官方源码，基线提交为 `687f282e8625c6b8d11ff58211a90524be2e4317`。当前为 **0.2.5 测试版**；完整真实 SSHFS 挂载验收仍需要具有 FUSE 权限的机器，详见 [测试记录](docs/validation.md)。
 
 一个 host 运行 dsh、现有插件、skills、模型连接和会话存储；远程服务器提供目录、计算环境、GPU/NPU 和终端。插件不复制一套完整 dsh 到每台服务器。
 
@@ -28,7 +28,7 @@ sudo apt-get install sshfs
 dsh --version
 
 # 交付包 release/ 下有预构建安装包，不必先构建源码
-dsh plugin --profile web add /absolute/path/dsh-ssh-workspaces/release/dsh-ssh-workspaces-0.2.4.tgz
+dsh plugin --profile web add /absolute/path/dsh-ssh-workspaces/release/dsh-ssh-workspaces-0.2.5.tgz
 dsh web
 ```
 
@@ -56,7 +56,7 @@ dsh web
 
 运行包是扩展根据官方 npm 包自动准备的，并非假定 GitHub 已发布独立 helper 可执行附件。首次安装需要 Host 有网；缓存完整时重连不需要重新下载。默认每个准备/传输步骤超时 10 分钟，可通过 `helperInstallTimeoutMs` 调整。失败或强制中断产生的旧版本/临时目录不用于新连接，管理员可在确认无连接使用后清理。
 
-**升级到 0.2.4：** 更新插件并重启 DSH Web；在面板重新连接自动安装模式的服务器，扩展会识别旧 runtime 并自动安装包含沙箱运行器的新版本，随后挂载原 workspace。无需手动安装 bubblewrap 或删除旧 Helper，配置与对话保留。手动模式须切换为自动安装才能获得这项管理。Host 自身的沙箱依赖仍由 Host 环境提供。
+**升级到 0.2.5：** 更新插件并重启 DSH Web；在面板断开、重新连接自动安装模式的服务器，扩展会识别旧 runtime 并自动安装包含沙箱运行器及探针详情的新版本，随后挂载原 workspace。检查失败时展开 **远程沙箱 → 详情**，可看到内核、架构、有效 UID，以及各后端的退出码、stderr、启动错误或超时。不额外执行探针，也不更改沙箱策略；本次升级用于定位故障，不能替代内核/容器配置修复。无需删除旧 Helper、workspace 或对话。手动模式须切换为自动安装才能获得这项管理。Host 自身的沙箱依赖仍由 Host 环境提供。
 
 静态 runner 由官方源码构建，保留旧内核兼容路径；源码、许可证、构建输入、摘要及可复现构建脚本随插件提供，见 [构建说明](runtime/vendor/bubblewrap/NOTICE.md)。bubblewrap 自身无 glibc 依赖，但 Helper 的 Node/原生模块仍有原有 Linux glibc 要求。内核未启用所需能力或容器禁止相关调用时，安装二进制不能使限制失效，连接预检会明确报告。
 
