@@ -2,7 +2,7 @@
 
 日期：2026-10-22。基线：DSH npm latest `0.2.1-rc.2`，官方 master `687f282e8625c6b8d11ff58211a90524be2e4317`。Node v24.19.0，Linux x64。
 
-插件版本：0.2.0。
+插件版本：0.2.1。此次增量重跑 typecheck、build、unit/SSHFS 参数回归和 Web smoke；SSH 传输及 helper 安装结果沿用 0.2.0 的记录（相关实现未修改）。
 
 ## 已完成
 
@@ -10,7 +10,8 @@
 |---|---|
 | `npm run typecheck` | 严格 TypeScript 检查通过 |
 | `npm run build` | host ESM、browser 懒加载 CJS factory、声明文件生成通过 |
-| `npm test` | 26/26 通过；结果摘要保存在 `test-results.txt` |
+| `npm test` | 28/28 通过；设置 `SSHFS_TEST_BINARY` 指向实际 SSHFS 3.7.3。默认从 PATH 查找，未安装时仅真实解析测试 skip。结果摘要保存在 `test-results.txt` |
+| SSHFS 参数回归 | 真实 SSHFS 3.7.3 / libfuse 3.14.0 重现 `ForwardAgent=no` 错误；修复后只有有意添加的探针选项被拒绝，避免尝试挂载/连接。真实 OpenSSH `-G` 验证禁止 agent 转发、严格 host key、BatchMode、keepalive 以及 alias 的 HostName/User/Port/ProxyJump 保留 |
 | `npm run test:ssh` | 4 pass、1 skip（Node 统计包括父测试）；真实 OpenSSH client 与非特权 SSH2 fixture 完成加密连接、并行 cwd、反向 TCP SSE；Manager 连接失败后没有泄露可用 provider |
 | `npm run test:web` | 真实已发布 dsh Web profile 启动；401 未登录、403 不可信 Origin、登录后 SSH config API、无 helper 字段的自动模式、手动模式 CRUD、browser module discovery 通过 |
 | `npm run test:install` | 6/6 通过（含父测试）；真实 OpenSSH + SSH2 fixture：完整自动安装及原生模块加载、重连复用不上传、损坏重装、截断/错误摘要拒绝、后台 Manager 状态与配置持久化 |
@@ -33,6 +34,7 @@
 ```bash
 npm ci
 npm run typecheck
+# 需要 sshfs 在 PATH；也可设置 SSHFS_TEST_BINARY=/path/to/sshfs
 npm test
 npm run build
 npm run test:web

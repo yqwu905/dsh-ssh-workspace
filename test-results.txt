@@ -1,17 +1,26 @@
-DSH SSH Workspaces 0.2.0 — verification summary
+DSH SSH Workspaces 0.2.1 — verification summary
 Date: 2026-10-22
 Node: v24.19.0 / Linux x64
 Upstream: @deepseek-ai/dsh 0.2.1-rc.2
 Commit: 687f282e8625c6b8d11ff58211a90524be2e4317
 
 npm run typecheck: PASS
-npm test: 26 tests, 26 pass, 0 fail, 0 skip
-npm run test:ssh: 5 tests (including parent), 4 pass, 0 fail, 1 skip
-npm run test:install: 6 tests (including parent), 6 pass, 0 fail, 0 skip
+npm test: 28 tests, 28 pass, 0 fail, 0 skip
+          SSHFS_TEST_BINARY points to Ubuntu SSHFS 3.7.3 / libfuse 3.14.0
+npm run test:ssh (0.2.0 baseline): 5 tests (including parent), 4 pass, 0 fail, 1 skip
+npm run test:install (0.2.0 baseline): 6 tests (including parent), 6 pass, 0 fail, 0 skip
 npm run build: PASS
 npm run test:web: PASS
 
-SSH integration observations:
+0.2.1 regression observations:
+PASS actual SSHFS/FUSE parser reproduces rejected ForwardAgent=no
+PASS corrected arguments leave only the intentionally invalid probe option
+     rejected; fuse_new fails before any mount or SSH connection attempt
+PASS actual OpenSSH -G retains no agent forwarding, strict host checking,
+     batch mode, keepalive, and alias HostName/User/Port/ProxyJump settings
+No real FUSE mount performed. Without sshfs installed, the parser test skips.
+
+SSH integration observations (0.2.0 baseline, unchanged code):
 PASS encrypted OpenSSH exec with parallel cwd isolation
 PASS reverse TCP SSH forwarding carries host HTTP SSE in multiple chunks
 PASS Manager does not expose a usable provider after transport initialization failure
@@ -28,7 +37,8 @@ PASS auto-mode server registration with no helper/Node/hash fields
 PASS server create/read/delete through native Web host
 PASS browser plugin module appears in DSH boot payload
 
-Auto-helper integration observations (real OpenSSH + unprivileged SSH2 fixture):
+Auto-helper integration observations (0.2.0 baseline, unchanged code;
+real OpenSSH + unprivileged SSH2 fixture):
 PASS locked npm dependency closure and verified official Node downloaded on Host
 PASS complete Linux x64 payload transferred and installed through SSH stdin
 PASS full inventory/hash/mode verification and PTY/Koffi/system native loading

@@ -13,6 +13,7 @@ import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import { z } from 'zod'
 import { persistedState, serverInput, workspaceInput, type ServerRecord, type WorkspaceRecord } from './config.js'
 import { discoverConfigHosts } from './ssh-config.js'
+import { sshfsArguments } from './sshfs.js'
 import { ensureHelper } from './helper-install.js'
 import type { SetupPhase } from './helper-bundle.js'
 
@@ -415,13 +416,7 @@ export class SshWorkspaceManager {
     await this.removeOfflineMarker(workspace.mountPath)
     await mkdir(workspace.mountPath, { mode: 0o700 })
     const server = this.requireServer(workspace.serverId)
-    const args = [
-      `${server.host}:${workspace.remotePath}`, workspace.mountPath, '-f',
-      '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ForwardAgent=no',
-      '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=3',
-      '-o', 'cache=no', '-o', 'attr_timeout=0', '-o', 'entry_timeout=0', '-o', 'negative_timeout=0',
-      '-o', 'default_permissions', '-o', 'follow_symlinks',
-    ]
+    const args = sshfsArguments(server.host, workspace.remotePath, workspace.mountPath)
     const child = spawn(this.options.sshfsBinary, args, { stdio: ['ignore', 'ignore', 'pipe'] })
     let diagnostic = ''
     let spawnError: Error | undefined

@@ -1,6 +1,6 @@
 # DSH SSH Workspaces
 
-面向 **DeepSeek Harness 0.2.1-rc.2** 的 Web 插件。2026-10-22 核对 npm `latest` 与官方源码，基线提交为 `687f282e8625c6b8d11ff58211a90524be2e4317`。当前为 **0.2.0 测试版**；完整真实 SSHFS 挂载验收仍需要具有 FUSE 权限的机器，详见 [测试记录](docs/validation.md)。
+面向 **DeepSeek Harness 0.2.1-rc.2** 的 Web 插件。2026-10-22 核对 npm `latest` 与官方源码，基线提交为 `687f282e8625c6b8d11ff58211a90524be2e4317`。当前为 **0.2.1 测试版**；完整真实 SSHFS 挂载验收仍需要具有 FUSE 权限的机器，详见 [测试记录](docs/validation.md)。
 
 一个 host 运行 dsh、现有插件、skills、模型连接和会话存储；远程服务器提供目录、计算环境、GPU/NPU 和终端。插件不复制一套完整 dsh 到每台服务器。
 
@@ -28,7 +28,7 @@ sudo apt-get install sshfs
 dsh --version
 
 # 交付包 release/ 下有预构建安装包，不必先构建源码
-dsh plugin --profile web add /absolute/path/dsh-ssh-workspaces/release/dsh-ssh-workspaces-0.2.0.tgz
+dsh plugin --profile web add /absolute/path/dsh-ssh-workspaces/release/dsh-ssh-workspaces-0.2.1.tgz
 dsh web
 ```
 
@@ -60,6 +60,31 @@ dsh web
 v0.1 的服务器配置可直接读取，保留原有手动模式。需要由扩展管理时，断开后编辑服务器，将 **Helper 安装** 切换为 **自动安装**。
 
 高级用户仍可选择手动模式接管已有的 executable 或 node-script helper；原 `scripts/deploy-helper.mjs` 保留，供部署已取得且核验过的官方 archive 使用。普通使用无需执行此脚本。
+
+## SSHFS 与远程运行环境
+
+SSHFS 将远程目录呈现为 **DSH Host 上的一个本地路径**，供原生 workspace 注册、Web 文件树和直接使用 `node:fs` 的插件访问。它不是下载或同步整个项目；通过挂载目录读写的仍是远程文件。浏览器所在电脑不需要挂载，远程服务器也不需要安装 SSHFS/FUSE。
+
+挂载本身不提供远程执行能力。插件另外将 SSH workspace 的 `ctx.subprocess`、PTY 和 sandbox 调用路由到对应服务器的官方 helper，并将 Host 挂载路径转换为远程真实路径。因此正常 bash/搜索/终端里的进程在远程运行，使用远程 CPU、GPU/NPU、Python、CUDA/CANN 和项目依赖；它们不会因 SSHFS 挂载而改用 Host 的运行环境。普通模型请求、插件服务、skills 发现和会话记录继续在 Host。
+
+环境变量以远程 helper 的进程环境为基础，由 DSH 按原有规则过滤并叠加调用者显式设置。它**不保证复现你在另一个交互式 SSH 终端里已经激活的 Conda/venv、module 或环境脚本状态**。默认 bash 工具每次调用启动新 shell，需要在同一次命令中激活环境，或直接使用远程解释器：
+
+```bash
+# 在 SSH workspace 的 bash 工具中执行；.venv 属于远程项目
+source .venv/bin/activate && python train.py
+# 或直接指定项目内的远程解释器
+.venv/bin/python train.py
+# 核对实际执行位置和解释器
+hostname; pwd; command -v python
+```
+
+Conda 可用 `conda run -n ENV python train.py`（必要时指定远程 conda 的完整路径）；Ascend 等依赖环境脚本的项目应在同一命令先 `source` 远程实际的环境脚本。Helper 自带的 Node 仅用于 helper 自身，不会替换项目 Node/Python。第三方插件若绕过 DSH 接口直接调用 Host `child_process`，以及明确配置的 Host 执行例外，仍在 Host，详见下表。
+
+### SSHFS 报 `unknown option(s): -o ForwardAgent=no`
+
+这是 0.2.0 的挂载参数错误：SSHFS 对可转交的 SSH 选项使用白名单，`ForwardAgent` 不在其中，被错误送入 FUSE。0.2.1 将 SSH 选项统一放到固定的 `ssh_command=ssh -a ...` 中交给 OpenSSH 解析，保持禁止 agent 转发、批处理登录、严格 host key 校验和 keepalive，不需要修改你的 SSH config。
+
+更新插件并重启 DSH Web 后，在原 workspace 记录上重试挂载即可；配置、远程目录和 helper 无需删除或重装。本次已用真实 SSHFS 3.7.3 / libfuse 3.14.0 重现旧错误并验证修复后的参数解析，完整挂载验收仍需可用的 FUSE 设备。
 
 ## 继承插件和 skills 的含义
 

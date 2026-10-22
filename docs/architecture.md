@@ -6,6 +6,8 @@
 
 本插件在 host 挂载真实目录，使原生 workspace 与会话机制继续工作；每台服务器建立独立 Cordis provider context，文件/进程调用依据路径选择该 context。不会在每轮对话切换全局服务器，也不会为远程目录创建一个内容为空的假 workspace。
 
+SSHFS 是当前 DSH 本地路径接口的兼容层，不是命令执行后端，也不会把远程 Python/Conda/CUDA 环境搬到 Host。远程执行由独立的 SSH subprocess/sandbox provider 完成。若未来 DSH 的 workspace 和所有相关 Web 文件 API 都支持远程 filesystem provider，才可在保持这些功能的前提下移除 SSHFS。
+
 ```mermaid
 flowchart TD
   U[DSH Web] --> M[SSH 管理面板]
@@ -29,6 +31,7 @@ flowchart TD
 | `src/index.ts` | Cordis 配置、依赖、HTTP 和路由生命周期 |
 | `src/config.ts` | 浏览器输入/持久状态校验 |
 | `src/manager.ts` | 多服务器、native provider context、真实挂载检测、持久化、断开和清理 |
+| `src/sshfs.ts` | SSHFS 参数；固定 ssh_command 将 SSH 选项交给 OpenSSH，避免进入 FUSE 选项解析 |
 | `src/routing.ts` | subprocess/PTY/sandbox 分流、路径变换、连接代际检查、host runtime 例外 |
 | `src/fs-routing.ts` | 原生远程文件读写、target 身份映射、同源 sandbox policy、符号链接边界 |
 | `src/http.ts` | 复用 dsh 鉴权与 Origin/Host 检查，64 KiB JSON 限制 |
@@ -85,3 +88,5 @@ Host 配置示例（profile `cordis.patch.yml`，完整 config 字段）：
 - [Web 插件发布](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/docs/user/develop/basic/publish.md)
 
 自动安装相关依据：[OpenSSH ssh_config](https://man.openbsd.org/ssh_config)、[npm 平台覆盖配置](https://docs.npmjs.com/cli/v11/using-npm/config/)、[固定 Node 摘要清单](https://nodejs.org/dist/v24.19.0/SHASUMS256.txt)。
+
+SSHFS 选项依据：[SSHFS 3.7.3 源码](https://github.com/libfuse/sshfs/blob/sshfs-3.7.3/sshfs.c) 中的 `ssh_opts` 白名单、`set_ssh_command` 与 `fuse_new`/`fuse_mount` 顺序，以及 [ssh_command 文档](https://github.com/libfuse/sshfs/blob/sshfs-3.7.3/sshfs.rst)。
