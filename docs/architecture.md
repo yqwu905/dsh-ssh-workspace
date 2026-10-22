@@ -62,6 +62,7 @@ flowchart TD
 - 按规范化路径边界和最长匹配路由，不使用字符串前缀近似，不设置全局 currentServer。
 - 断线或 mount 状态非 mounted 均拒绝操作；旧文件 target 或已准备沙箱不可跨新连接重用。
 - 执行取消、独立 stdout/stderr/control/PTY 和进程树清理由官方 provider/helper 负责。
+- 租约 heartbeat 只由官方 `SshConnection` 管理；其协议只有一个独立的在途心跳额度。插件每 10 秒通过只读 `terminal.environment` 查询更新 Web 连接状态，最多一个检查在途。普通 RPC 满载只跳过检查，不误报断线；断开/重连后旧检查不能修改新连接状态。
 - 原生模式和沙箱配置原样传递到远程；不会为兼容性自动降为 danger-full-access。
 - 服务端 CRUD 串行化，配置临时文件写入后原子 rename，目录 0700、文件 0600。跨多个 dsh 进程共享同一 stateDir 未实现进程间锁，应为不同 profile 配置独立目录。
 - 插件不接收私钥、SSH flags 或任意管理 shell。管理 HTTP API 必须通过 host 的 `connection.requestRejection`。
@@ -90,3 +91,5 @@ Host 配置示例（profile `cordis.patch.yml`，完整 config 字段）：
 自动安装相关依据：[OpenSSH ssh_config](https://man.openbsd.org/ssh_config)、[npm 平台覆盖配置](https://docs.npmjs.com/cli/v11/using-npm/config/)、[固定 Node 摘要清单](https://nodejs.org/dist/v24.19.0/SHASUMS256.txt)。
 
 SSHFS 选项依据：[SSHFS 3.7.3 源码](https://github.com/libfuse/sshfs/blob/sshfs-3.7.3/sshfs.c) 中的 `ssh_opts` 白名单、`set_ssh_command` 与 `fuse_new`/`fuse_mount` 顺序，以及 [ssh_command 文档](https://github.com/libfuse/sshfs/blob/sshfs-3.7.3/sshfs.rst)。
+
+心跳与容量依据：[官方协议实现](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/ssh/ssh/src/protocol.ts) 中的 `managementLimits.heartbeat = 1`，以及 [官方连接实现](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/ssh/ssh/src/index.ts) 中已有的单在途心跳定时器。

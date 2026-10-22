@@ -1,6 +1,6 @@
 # DSH SSH Workspaces
 
-面向 **DeepSeek Harness 0.2.1-rc.2** 的 Web 插件。2026-10-22 核对 npm `latest` 与官方源码，基线提交为 `687f282e8625c6b8d11ff58211a90524be2e4317`。当前为 **0.2.1 测试版**；完整真实 SSHFS 挂载验收仍需要具有 FUSE 权限的机器，详见 [测试记录](docs/validation.md)。
+面向 **DeepSeek Harness 0.2.1-rc.2** 的 Web 插件。2026-10-22 核对 npm `latest` 与官方源码，基线提交为 `687f282e8625c6b8d11ff58211a90524be2e4317`。当前为 **0.2.2 测试版**；完整真实 SSHFS 挂载验收仍需要具有 FUSE 权限的机器，详见 [测试记录](docs/validation.md)。
 
 一个 host 运行 dsh、现有插件、skills、模型连接和会话存储；远程服务器提供目录、计算环境、GPU/NPU 和终端。插件不复制一套完整 dsh 到每台服务器。
 
@@ -28,7 +28,7 @@ sudo apt-get install sshfs
 dsh --version
 
 # 交付包 release/ 下有预构建安装包，不必先构建源码
-dsh plugin --profile web add /absolute/path/dsh-ssh-workspaces/release/dsh-ssh-workspaces-0.2.1.tgz
+dsh plugin --profile web add /absolute/path/dsh-ssh-workspaces/release/dsh-ssh-workspaces-0.2.2.tgz
 dsh web
 ```
 
@@ -85,6 +85,14 @@ Conda 可用 `conda run -n ENV python train.py`（必要时指定远程 conda �
 这是 0.2.0 的挂载参数错误：SSHFS 对可转交的 SSH 选项使用白名单，`ForwardAgent` 不在其中，被错误送入 FUSE。0.2.1 将 SSH 选项统一放到固定的 `ssh_command=ssh -a ...` 中交给 OpenSSH 解析，保持禁止 agent 转发、批处理登录、严格 host key 校验和 keepalive，不需要修改你的 SSH config。
 
 更新插件并重启 DSH Web 后，在原 workspace 记录上重试挂载即可；配置、远程目录和 helper 无需删除或重装。本次已用真实 SSHFS 3.7.3 / libfuse 3.14.0 重现旧错误并验证修复后的参数解析，完整挂载验收仍需可用的 FUSE 设备。
+
+### 对话报 workspace offline，服务器报 pending request limit reached
+
+0.2.0/0.2.1 的插件状态检查重复发送了官方 `SshConnection` 已经管理的心跳。两套定时器都每 10 秒触发，而协议只允许一个未完成的 heartbeat；两者重叠便报 `SSH helper pending request limit reached`，随后插件把服务器标为 error，文件路由因而拒绝访问。这可能在 workspace 添加成功后、首次对话读取项目指令时表现出来。普通 RPC 的 `maxPending=128` 与心跳的独立额度不同，增大普通请求上限不能解决此问题。
+
+0.2.2 只保留官方连接的心跳；Web 状态检查改用只读的 `terminal.environment` 查询（不会创建终端或启动命令），同一连接最多一个检查在途。普通 RPC 暂时满载时跳过这一轮检查，不标离线、不重放业务操作；真实传输故障仍会标为 error 并阻止本地回退。
+
+恢复步骤：更新插件到 0.2.2，重启 DSH Web；在 SSH 工作区面板重新连接服务器、挂载原 workspace，然后重试原对话。已有服务器配置、workspace 注册、历史对话和远程项目可保留；无需删除 helper 或修改 SSH config。
 
 ## 继承插件和 skills 的含义
 

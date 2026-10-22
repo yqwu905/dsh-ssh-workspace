@@ -10,7 +10,6 @@ import { SshSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-ssh'
 import { SshSandboxProvider } from '@deepseek-ai/dsh-sandbox-ssh'
 import { SshFileSystem } from '@deepseek-ai/dsh-fs-ssh'
 import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
-import { z } from 'zod'
 import { persistedState, serverInput, workspaceInput, type ServerRecord, type WorkspaceRecord } from './config.js'
 import { discoverConfigHosts } from './ssh-config.js'
 import { sshfsArguments } from './sshfs.js'
@@ -35,7 +34,7 @@ export interface ManagerOptions {
   helperInstallTimeoutMs?: number
 }
 export interface RemoteProviders { subprocess: SshSubprocessRuntime; sandbox: SshSandboxProvider; fs: SshFileSystem }
-interface Remote extends RemoteProviders { ssh: SshConnection; fiber: Fiber; tunnel?: ChildProcess; heartbeat?: NodeJS.Timeout }
+interface Remote extends RemoteProviders { ssh: SshConnection; fiber: Fiber; tunnel?: ChildProcess; healthCheck?: NodeJS.Timeout }
 interface RuntimeMount { process: ChildProcess; closed: Promise<void> }
 
 /** Parse Linux's escaped mountinfo fields without shell parsing. */
@@ -345,14 +344,24 @@ export class SshWorkspaceManager {
       server.status = 'connected'
       const connected = remote
       let checking = false
-      remote.heartbeat = setInterval(() => {
+      // SshConnection owns the lease heartbeat. The wire protocol allows only
+      // ONE pending heartbeat, independent of maxPending: sending another here
+      // races its native timer and can invalidate an otherwise healthy server.
+      // Use a cheap read-only provider query for UI status, with one in flight.
+      remote.healthCheck = setInterval(() => {
         if (checking || this.remotes.get(id) !== connected || server.status !== 'connected') return
         checking = true
-        void connected.ssh.request('heartbeat', {}, z.null()).catch((error: unknown) => {
-          if (this.remotes.get(id) === connected) { server.status = 'error'; server.error = message(error) }
+        void connected.subprocess.terminalEnvironment().catch((error: unknown) => {
+          if (this.remotes.get(id) !== connected) return
+          // Ordinary-request backpressure is not transport failure. The native
+          // heartbeat has reserved capacity and continues renewing the lease.
+          if (message(error) === 'SSH helper pending request limit reached') return
+          server.status = 'error'
+          server.error = message(error)
+          if (connected.healthCheck) clearInterval(connected.healthCheck)
         }).finally(() => { checking = false })
       }, 10_000)
-      remote.heartbeat.unref()
+      remote.healthCheck.unref()
       return remote
     } catch (error) {
       server.status = 'error'
@@ -371,7 +380,7 @@ export class SshWorkspaceManager {
     delete server.error
     delete server.setupPhase
     if (!remote) return
-    if (remote.heartbeat) clearInterval(remote.heartbeat)
+    if (remote.healthCheck) clearInterval(remote.healthCheck)
     if (remote.tunnel) await this.stopChild(remote.tunnel)
     await remote.fiber.dispose()
   }

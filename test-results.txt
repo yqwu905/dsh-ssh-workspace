@@ -1,18 +1,31 @@
-DSH SSH Workspaces 0.2.1 — verification summary
+DSH SSH Workspaces 0.2.2 — verification summary
 Date: 2026-10-22
 Node: v24.19.0 / Linux x64
 Upstream: @deepseek-ai/dsh 0.2.1-rc.2
 Commit: 687f282e8625c6b8d11ff58211a90524be2e4317
 
 npm run typecheck: PASS
-npm test: 28 tests, 28 pass, 0 fail, 0 skip
+npm test: 32 tests, 32 pass, 0 fail, 0 skip
           SSHFS_TEST_BINARY points to Ubuntu SSHFS 3.7.3 / libfuse 3.14.0
 npm run test:ssh (0.2.0 baseline): 5 tests (including parent), 4 pass, 0 fail, 1 skip
 npm run test:install (0.2.0 baseline): 6 tests (including parent), 6 pass, 0 fail, 0 skip
 npm run build: PASS
 npm run test:web: PASS
 
-0.2.1 regression observations:
+0.2.2 connection lifecycle regression observations:
+REPRODUCED before fix: overlapping native/plugin heartbeat makes Manager error
+           with the exact "SSH helper pending request limit reached" message
+PASS one native heartbeat remains outstanding across UI checks; routed project
+     AGENTS.md reads stay usable while heartbeat response is delayed
+PASS 128 ordinary pending reads do not poison status or block native heartbeat;
+     admitted reads complete once, no automatic replay
+PASS stream disconnect marks error and denies FS access; reconnect replaces provider
+PASS slow status checks never overlap; old generation cannot poison reconnect
+Uses published SshConnection/providers/SshRpcPeer and real Manager/FS routing.
+Only the SSH subprocess transport is replaced with in-memory streams; this is
+not a production sshd, FUSE mount or actual LLM conversation test.
+
+SSHFS regression observations (rerun in 0.2.2):
 PASS actual SSHFS/FUSE parser reproduces rejected ForwardAgent=no
 PASS corrected arguments leave only the intentionally invalid probe option
      rejected; fuse_new fails before any mount or SSH connection attempt
