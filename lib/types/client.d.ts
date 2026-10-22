@@ -21,7 +21,7 @@ declare const zh: {
     readonly helperMode: "Helper 安装";
     readonly autoHelper: "自动安装（推荐）";
     readonly manualHelper: "手动指定（高级）";
-    readonly autoHelp: "首次连接时自动安装匹配版本的 Helper 和 Node，远端无需联网。可关闭本面板，安装会在后台继续。";
+    readonly autoHelp: "首次连接时自动安装匹配版本的 Helper、Node 及 Linux 沙箱运行器，远端无需联网。可关闭本面板，安装会在后台继续。";
     readonly installing: "安装中";
     readonly detecting: "检测远程平台…";
     readonly preparing: "Host 正在准备运行包…";
@@ -61,7 +61,7 @@ declare const zh: {
     readonly sandboxError: "检测失败";
     readonly sandboxFull: "完整约束";
     readonly sandboxPartial: "部分约束";
-    readonly sandboxHint: "这是只读后端预检，命令仍须通过运行时检查。Linux 需可用的 bubblewrap 或 Landlock；macOS 需 sandbox-exec。修复远程环境后断开重连；修复 Host 后重启 DSH。";
+    readonly sandboxHint: "只读后端预检，命令仍须通过运行时检查。自动安装的 Linux Helper 自带 bubblewrap 和 Landlock，仍需内核/容器允许其运行；Host 需自行具备沙箱能力。macOS 使用系统 sandbox-exec。修复远程后断开重连；修复 Host 后重启 DSH。";
     readonly noWorkspaces: "此服务器还没有工作区。";
     readonly noSessions: "此工作区还没有对话。";
     readonly selectServer: "选择服务器";

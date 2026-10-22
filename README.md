@@ -1,13 +1,13 @@
 # DSH SSH Workspaces
 
-面向 **DeepSeek Harness 0.2.1-rc.2** 的 Web 插件。2026-10-22 核对 npm `latest` 与官方源码，基线提交为 `687f282e8625c6b8d11ff58211a90524be2e4317`。当前为 **0.2.3 测试版**；完整真实 SSHFS 挂载验收仍需要具有 FUSE 权限的机器，详见 [测试记录](docs/validation.md)。
+面向 **DeepSeek Harness 0.2.1-rc.2** 的 Web 插件。2026-10-22 核对 npm `latest` 与官方源码，基线提交为 `687f282e8625c6b8d11ff58211a90524be2e4317`。当前为 **0.2.4 测试版**；完整真实 SSHFS 挂载验收仍需要具有 FUSE 权限的机器，详见 [测试记录](docs/validation.md)。
 
 一个 host 运行 dsh、现有插件、skills、模型连接和会话存储；远程服务器提供目录、计算环境、GPU/NPU 和终端。插件不复制一套完整 dsh 到每台服务器。
 
 | 需求 | 实现 |
 |---|---|
 | 多台 SSH 服务器 | Web 直接选择 `~/.ssh/config` 及 Include 中的 Host alias，密钥和 known_hosts 留在 host |
-| Helper 自动安装 | Host 准备锁定依赖和目标平台 Node，经 SSH 安装、校验、缓存复用；远端无需联网 |
+| Helper 自动安装 | Host 准备锁定依赖、目标平台 Node 及 Linux 静态 bubblewrap/Landlock，经 SSH 安装、校验、缓存复用；远端无需联网 |
 | 远程目录作为 workspace | SSHFS 挂载为真实目录，注册到原生 WorkspaceRegistry |
 | 原生对话 | 沿用 dsh 的 workspace、对话、新建、历史、归档和恢复 |
 | host 插件和 skills | 保留同一个 host profile、注册表、模型和设置，无需重复安装 |
@@ -28,7 +28,7 @@ sudo apt-get install sshfs
 dsh --version
 
 # 交付包 release/ 下有预构建安装包，不必先构建源码
-dsh plugin --profile web add /absolute/path/dsh-ssh-workspaces/release/dsh-ssh-workspaces-0.2.3.tgz
+dsh plugin --profile web add /absolute/path/dsh-ssh-workspaces/release/dsh-ssh-workspaces-0.2.4.tgz
 dsh web
 ```
 
@@ -51,9 +51,14 @@ dsh web
 - 通过 SSH stdin 传送完整压缩包，在远端用户目录 `~/.local/share/dsh-ssh-workspaces/runtimes/` 的临时目录解包，校验 archive、完整文件清单和每个摘要，实际加载 PTY/Koffi/system 原生模块，再移动到独立版本目录并设为只读。
 - 完整路径、helper 摘要和启动配置由扩展自动保存。再次连接先校验并复用，不重复传输；若损坏或版本不同，自动安装到新目录，保留旧目录，不覆盖其他连接可能仍在使用的运行包。
 - Host 运行包缓存位于 `<stateDir>/helper-cache/`；首台服务器准备后，同平台服务器可复用缓存。模型请求、插件、Skills 仍在 Host；安装后的工具调用继续复用官方 SSH 长连接。
+- Linux 自动携带 x64/arm64 对应的 **bubblewrap 0.13.1 静态 PIE**，无需远端 apt/dnf、sudo、glibc 动态加载器或 `libcap.so`；仍保留官方 Landlock 启动器。只安装到该 Helper 的 `tools/bin/bwrap`，不修改系统 PATH、不创建 setuid 文件。内置 bwrap → 已有系统 bwrap → Landlock 依次进行功能探测，命令固定使用探测成功的绝对路径。macOS 沿用系统 `sandbox-exec`。
 - 远端安装目录须位于 workspace 之外。无需 sudo；安装包支持 Linux glibc/macOS 的 x64/arm64。具体系统库、内核及沙箱能力仍由启动/连接检查确认；不支持 musl Linux 或原生 Windows。
 
 运行包是扩展根据官方 npm 包自动准备的，并非假定 GitHub 已发布独立 helper 可执行附件。首次安装需要 Host 有网；缓存完整时重连不需要重新下载。默认每个准备/传输步骤超时 10 分钟，可通过 `helperInstallTimeoutMs` 调整。失败或强制中断产生的旧版本/临时目录不用于新连接，管理员可在确认无连接使用后清理。
+
+**升级到 0.2.4：** 更新插件并重启 DSH Web；在面板重新连接自动安装模式的服务器，扩展会识别旧 runtime 并自动安装包含沙箱运行器的新版本，随后挂载原 workspace。无需手动安装 bubblewrap 或删除旧 Helper，配置与对话保留。手动模式须切换为自动安装才能获得这项管理。Host 自身的沙箱依赖仍由 Host 环境提供。
+
+静态 runner 由官方源码构建，保留旧内核兼容路径；源码、许可证、构建输入、摘要及可复现构建脚本随插件提供，见 [构建说明](runtime/vendor/bubblewrap/NOTICE.md)。bubblewrap 自身无 glibc 依赖，但 Helper 的 Node/原生模块仍有原有 Linux glibc 要求。内核未启用所需能力或容器禁止相关调用时，安装二进制不能使限制失效，连接预检会明确报告。
 
 ### 已有手动配置
 
@@ -96,11 +101,11 @@ Conda 可用 `conda run -n ENV python train.py`（必要时指定远程 conda �
 
 ### 聊天正常，但命令报 sandbox mode workspace-write 无可用后端
 
-SSH 连接和模型请求成功，不代表执行命令的机器具备进程沙箱。自动 Helper 已包含 Landlock 启动器，但内核、容器限制和系统 bubblewrap 仍决定沙箱能否工作；SSHFS 不提供这项能力。
+SSH 连接和模型请求成功，不代表执行命令的机器具备进程沙箱。0.2.4 自动 Helper 已包含静态 bubblewrap 和 Landlock 启动器，但内核及容器限制仍决定沙箱能否工作；SSHFS 不提供这项能力。
 
 0.2.3 在连接时预检 Host 与远程后端，**检查连接与沙箱** 和服务器卡片分别展示两端结果。命令错误标明实际执行位置，保留 `SANDBOX_UNAVAILABLE` 并去掉重复包装；不会改策略或回退到 Host 执行。只读预检不启动项目命令，“已选择后端”仍需每条命令通过运行时检查。
 
-在报错机器安装/启用可用的 bubblewrap 或 Landlock；容器权限受限时需由部署者处理。修复远程后断开重连，修复 Host 后重启 DSH。具体定位、离线机器处理及显式无沙箱部署选项见 [沙箱故障恢复](docs/sandbox.md)。仅升级插件补齐诊断，**不能替服务器补上内核能力**。
+使用 0.2.4 自动模式的远程服务器无需再手动安装 bubblewrap；若仍不可用，应检查内核/容器限制。Host 或手动模式的安装仍需具备自己的后端。修复远程后断开重连，修复 Host 后重启 DSH。具体定位及显式无沙箱部署选项见 [沙箱故障恢复](docs/sandbox.md)。自动安装可补齐用户态运行器，**不能替服务器补上内核能力**。
 
 ## 继承插件和 skills 的含义
 

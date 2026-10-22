@@ -28,7 +28,7 @@ export function sandboxError(error: unknown, policy: SandboxPolicy, location: st
   const result = new SandboxUnavailableError(policy.mode)
   result.message = `${location}: cannot prepare sandbox mode "${policy.mode}". `
     + 'On the machine executing this command, Linux needs usable bubblewrap or an enforcing Landlock kernel; macOS needs usable sandbox-exec. '
-    + 'An installed helper alone does not supply kernel/container permissions. '
+    + 'Managed Linux helpers include bubblewrap and Landlock; when both are unusable, check kernel/container permissions. Host or manual installations may still need a runner. '
     + 'The command was not executed; the sandbox policy was not changed. '
     + 'Use SSH Workspaces > Check connection and sandbox, then reconnect after repairing the backend.'
     + (detail ? ` Detail: ${detail}` : '')

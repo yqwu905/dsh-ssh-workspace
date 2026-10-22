@@ -10,6 +10,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import ssh2, { type Connection } from 'ssh2'
 import { command, shellQuote as q, sshCommand } from '../src/commands.ts'
 import { prepareBundle, isTarget } from '../src/helper-bundle.ts'
+import { validateStaticElf } from '../src/helper-sandbox.ts'
 import { detectPlatform, deployBundle, ensureHelper, installationScript } from '../src/helper-install.ts'
 import { Context } from '@deepseek-ai/cordis'
 import { SshWorkspaceManager } from '../src/manager.ts'
@@ -78,13 +79,28 @@ test('automatic helper installation through real OpenSSH', { timeout: 1_200_000 
     assert.deepEqual(await detectPlatform('helper-test'), { home: remoteHome, target })
     await assert.rejects(sshCommand('helper-test', 'node --version'), /disabled by fixture/u)
     const phases: string[] = []
-    let installed = await ensureHelper('helper-test', cache, 600_000, phase => phases.push(phase))
+    // A previous release has the same upstream helper entry hash, but no tools.
+    // A new runtime key must trigger deployment rather than reusing that entry.
+    const previous = join(remoteHome, `.local/share/dsh-ssh-workspaces/runtimes/0.2.1-rc.2-${target}-legacy/node_modules/@deepseek-ai/dsh-ssh/lib/helper.js`)
+    await mkdir(dirname(previous), { recursive: true })
+    const previousSource = await readFile('node_modules/@deepseek-ai/dsh-ssh/lib/helper.js', 'utf8')
+    await writeFile(previous, previousSource)
+    let installed = await ensureHelper('helper-test', cache, 600_000, phase => phases.push(phase), previous)
     await t.test('installs complete pinned runtime with bundled Node and native add-ons', async () => {
       assert.ok(installed.helper.startsWith(remoteHome + '/'))
       assert.equal(installed.launch.kind, 'node-script')
       assert.deepEqual(phases, ['detecting', 'preparing', 'uploading', 'verifying'])
       assert.equal((await sshCommand('helper-test', `${q(installed.launch.node)} --version`)).trim(), 'v24.19.0')
       assert.match(await readFile(installed.helper, 'utf8'), /runSshHelper/u)
+      assert.notEqual(installed.helper, previous)
+      assert.equal(await readFile(previous, 'utf8'), previousSource)
+      if (process.platform === 'linux') {
+        const runtime = resolveRuntime(installed.launch.node)
+        const binary = join(runtime, 'tools/bin/bwrap')
+        assert.equal((await sshCommand('helper-test', `${q(binary)} --version`)).trim(), 'bubblewrap 0.13.1')
+        validateStaticElf(await readFile(binary), process.arch as 'x64' | 'arm64')
+        assert.match(await readFile(join(runtime, 'node_modules/@deepseek-ai/dsh-sandbox-local/lib/index.js'), 'utf8'), /__dshSshSelectedBwrap/u)
+      }
     })
     await t.test('reconnect reuses verified deployment without retransmission', async () => {
       const repeated: string[] = []
@@ -94,10 +110,11 @@ test('automatic helper installation through real OpenSSH', { timeout: 1_200_000 
     })
     await t.test('corrupt installed payload is replaced in a fresh directory', async () => {
       const old = installed.helper
-      await chmod(old, 0o600); await writeFile(old, 'corrupted fixture')
+      const damaged = process.platform === 'linux' ? join(resolveRuntime(installed.launch.node), 'tools/bin/bwrap') : old
+      await chmod(damaged, 0o600); await writeFile(damaged, 'corrupted fixture')
       const next = await ensureHelper('helper-test', cache, 600_000, () => {}, old)
       assert.notEqual(next.helper, old)
-      assert.equal(await readFile(old, 'utf8'), 'corrupted fixture')
+      assert.equal(await readFile(damaged, 'utf8'), 'corrupted fixture')
       installed = next
     })
     await t.test('bad/truncated transfer never becomes an installed runtime', async () => {
@@ -140,7 +157,7 @@ test('automatic helper installation through real OpenSSH', { timeout: 1_200_000 
         await rm(join(stateDir, 'helper-cache'), { force: true })
       }
     })
-    t.diagnostic('OpenSSH transport, archive/inventory verification and native module loading passed. This fixture blocks ambient node/npm/curl/wget; kernel confinement and FUSE are separate gates.')
+    t.diagnostic('OpenSSH transport, archive/inventory verification, native module loading and bundled bubblewrap execution passed. This fixture blocks ambient node/npm/curl/wget; kernel confinement and FUSE are separate gates.')
   } catch (error) { if (errors) t.diagnostic(errors); throw error }
   finally {
     process.env.PATH = originalPath
@@ -151,3 +168,5 @@ test('automatic helper installation through real OpenSSH', { timeout: 1_200_000 
     await rm(root, { recursive: true, force: true })
   }
 })
+
+function resolveRuntime(node: string): string { return dirname(dirname(dirname(node))) }

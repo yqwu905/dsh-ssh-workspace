@@ -5,6 +5,7 @@ import { lstat, readFile, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
+import { execFileSync } from 'node:child_process'
 
 const root = dirname(fileURLToPath(import.meta.url))
 const digest = async path => {
@@ -45,6 +46,14 @@ try {
   await import('@deepseek-ai/dsh-fs-sandbox')
   await import('@deepseek-ai/dsh-subprocess-local')
   await import('@deepseek-ai/dsh-sandbox-local')
+  if (process.platform === 'linux') {
+    const metadata = JSON.parse(await readFile(join(root, 'tools/bubblewrap.json'), 'utf8'))
+    const runner = join(root, 'tools/bin/bwrap')
+    if (metadata.target !== `linux-${process.arch}` || await digest(runner) !== metadata.sha256) throw new Error('Bundled bubblewrap metadata mismatch')
+    const version = execFileSync(runner, ['--version'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+    if (version !== `bubblewrap ${metadata.version}`) throw new Error('Bundled bubblewrap cannot run on this server')
+    // --version checks the executable/ABI; kernel enforcement is checked by the provider on connection.
+  }
   process.stdout.write('DSH_HELPER_READY\n')
 } catch (error) {
   process.stderr.write(`Helper verification failed: ${error.message}\n`)

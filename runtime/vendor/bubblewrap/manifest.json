@@ -1,0 +1,69 @@
+{
+  "format": 1,
+  "version": "0.13.1",
+  "source": {
+    "file": "source/bubblewrap-0.13.1.tar.xz",
+    "url": "https://github.com/containers/bubblewrap/releases/download/v0.13.1/bubblewrap-0.13.1.tar.xz",
+    "sha256": "0e85c8702248b8dd64144f594147553650cdd0e4c951690345faace79c217c4d"
+  },
+  "toolchain": {
+    "version": "0.15.2",
+    "url": "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz",
+    "sha256": "02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239"
+  },
+  "assumeKernel": null,
+  "libcap": {
+    "version": "2.78-r1",
+    "sourceUrl": "https://kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-2.78.tar.xz",
+    "alpineCommit": "7daca2f1f7480ef116712b7763095bc5b2937838",
+    "sourceSha256": "0d621e562fd932ccf67b9660fb018e468a683d7b827541df27813228c996bb11"
+  },
+  "sdk": [
+    {
+      "arch": "x86_64",
+      "package": "libcap-dev",
+      "version": "2.78-r1",
+      "sha256": "5b1edbe96259d1462670d9c4e477df5ff3914f91ebf86a3e4bdb578321bad397",
+      "indexChecksum": "Q1bOXVvCGKshqhfILfm+OjB+vQALc=",
+      "file": "source/x86_64-libcap-dev.apk",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64/libcap-dev-2.78-r1.apk"
+    },
+    {
+      "arch": "x86_64",
+      "package": "libcap-static",
+      "version": "2.78-r1",
+      "sha256": "5ba273f444bfa76d1b4759873f8d5beac2ddcdeb2586f8e6d1dddef7a14ff3a6",
+      "indexChecksum": "Q1STM9eYXRAQIPGg9i0elVRPpd328=",
+      "file": "source/x86_64-libcap-static.apk",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/x86_64/libcap-static-2.78-r1.apk"
+    },
+    {
+      "arch": "aarch64",
+      "package": "libcap-dev",
+      "version": "2.78-r1",
+      "sha256": "6570ac3e07417643584d35be8bf6fe0748948d81caf60fa0ceef99ef6ac01fef",
+      "indexChecksum": "Q1+59jmtPvfPhSbaw61Wu/bTnuF+A=",
+      "file": "source/aarch64-libcap-dev.apk",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/libcap-dev-2.78-r1.apk"
+    },
+    {
+      "arch": "aarch64",
+      "package": "libcap-static",
+      "version": "2.78-r1",
+      "sha256": "904fbf6958949b260db66dabf17b316d72c52d5cdf792eb6c11ffee040b46586",
+      "indexChecksum": "Q1uVgmRBFsRheoUGBgzBnyZg6Z1tI=",
+      "file": "source/aarch64-libcap-static.apk",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/libcap-static-2.78-r1.apk"
+    }
+  ],
+  "binaries": {
+    "linux-x64": {
+      "sha256": "3b51a514167e36f58c50555f21c4c189d3572ad1df8285865af759c3c4ccb7e8",
+      "bytes": 142512
+    },
+    "linux-arm64": {
+      "sha256": "981c1599f19c61a7351b30f3effc715cd075b0c8914b67d049758ac7a69bb212",
+      "bytes": 151608
+    }
+  }
+}

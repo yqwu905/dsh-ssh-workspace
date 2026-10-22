@@ -5,6 +5,7 @@ import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, 
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { command } from './commands.js'
+import { installBundledSandbox } from './helper-sandbox.js'
 
 export const DSH_VERSION = '0.2.1-rc.2'
 export const NODE_VERSION = '24.19.0'
@@ -33,8 +34,8 @@ export async function sha256(path: string): Promise<string> {
 export function isTarget(value: string): value is Target { return Object.hasOwn(NODE_SHA256, value) }
 
 export async function bundleKey(target: Target): Promise<string> {
-  const hash = createHash('sha256').update(`managed-runtime-v1:${target}:${NODE_SHA256[target]}`)
-  for (const name of ['package.json', 'package-lock.json', 'verify.mjs']) hash.update(await readFile(join(runtimeDirectory, name)))
+  const hash = createHash('sha256').update(`managed-runtime-v2:${target}:${NODE_SHA256[target]}`)
+  for (const name of ['package.json', 'package-lock.json', 'verify.mjs', ...['manifest.json', 'NOTICE.md', 'LICENSE-bubblewrap', 'LICENSE-musl', 'LICENSE-libcap', 'LICENSE-zig'].map(name => `vendor/bubblewrap/${name}`)]) hash.update(await readFile(join(runtimeDirectory, name)))
   return `${DSH_VERSION}-${target}-${hash.digest('hex').slice(0, 20)}`
 }
 
@@ -72,6 +73,7 @@ async function prepare(target: Target, key: string, cache: string, timeoutMs: nu
     if (platform === 'darwin') await chmod(join(pty, 'spawn-helper'), 0o755)
     await lstat(join(payload, `node_modules/@deepseek-ai/node-addon-system-${target}/bin`, platform === 'linux' ? 'glibc/system.node' : 'system.node'))
     await lstat(join(payload, `node_modules/@koromix/koffi-${target}`))
+    await installBundledSandbox(payload, target)
     const nodeName = `node-v${NODE_VERSION}-${target}`
     const archive = join(parent, `${nodeName}.tar.gz`)
     if (await sha256(archive).catch(() => '') !== NODE_SHA256[target]) {

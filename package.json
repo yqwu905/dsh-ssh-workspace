@@ -1,6 +1,6 @@
 {
   "name": "dsh-ssh-workspaces",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Native DSH Web SSH workspaces with host plugins and skills, shared SSH execution and optional reverse tunnels",
   "type": "module",
   "license": "MIT",
@@ -22,6 +22,7 @@
     "lib",
     "cordis.patch.yml",
     "scripts/deploy-helper.mjs",
+    "scripts/build-bubblewrap.py",
     "docs",
     "README.md",
     "LICENSE",

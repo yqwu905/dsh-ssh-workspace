@@ -4,5 +4,5 @@
   "commit": "687f282e8625c6b8d11ff58211a90524be2e4317",
   "verified_on": "2026-10-22",
   "status": "beta; automatic Linux x64 helper installation verified; native ControlMaster and FUSE acceptance pending",
-  "plugin_version": "0.2.3"
+  "plugin_version": "0.2.4"
 }

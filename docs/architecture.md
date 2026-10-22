@@ -39,6 +39,7 @@ flowchart TD
 | `src/client.tsx` | 原生 Web panel、服务器/workspace/对话管理 |
 | `src/ssh-config.ts` | 有界枚举 Host / Include 候选别名，不执行配置命令或读取私钥 |
 | `src/helper-bundle.ts` / `runtime/` | 锁定目标平台依赖、下载并校验 Node、构建及缓存完整运行包 |
+| `src/helper-sandbox.ts` / `runtime/vendor/bubblewrap/` | 已验证的 x64/arm64 静态运行器、固定版本官方 provider 的探测/路径适配、完整源码与许可证 |
 | `src/helper-install.ts` | SSH 平台检测、离线安装、全量校验、复用与损坏重装 |
 | `src/commands.ts` | 有界进程、字面参数、SSH stdin 流式上传 |
 | `scripts/deploy-helper.mjs` | 高级用户手动部署官方 helper archive |
