@@ -33,6 +33,7 @@ flowchart TD
 | `src/manager.ts` | 多服务器、native provider context、真实挂载检测、持久化、断开和清理 |
 | `src/sshfs.ts` | SSHFS 参数；固定 ssh_command 将 SSH 选项交给 OpenSSH，避免进入 FUSE 选项解析 |
 | `src/routing.ts` | subprocess/PTY/sandbox 分流、路径变换、连接代际检查、host runtime 例外 |
+| `src/sandbox-diagnostics.ts` | 有界只读后端预检、Host/远程定位、保留错误类型并去掉重复包装 |
 | `src/fs-routing.ts` | 原生远程文件读写、target 身份映射、同源 sandbox policy、符号链接边界 |
 | `src/http.ts` | 复用 dsh 鉴权与 Origin/Host 检查，64 KiB JSON 限制 |
 | `src/client.tsx` | 原生 Web panel、服务器/workspace/对话管理 |

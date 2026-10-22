@@ -1,18 +1,30 @@
-DSH SSH Workspaces 0.2.2 — verification summary
+DSH SSH Workspaces 0.2.3 — verification summary
 Date: 2026-10-22
 Node: v24.19.0 / Linux x64
 Upstream: @deepseek-ai/dsh 0.2.1-rc.2
 Commit: 687f282e8625c6b8d11ff58211a90524be2e4317
 
 npm run typecheck: PASS
-npm test: 32 tests, 32 pass, 0 fail, 0 skip
+npm test: 41 tests, 41 pass, 0 fail, 0 skip
           SSHFS_TEST_BINARY points to Ubuntu SSHFS 3.7.3 / libfuse 3.14.0
 npm run test:ssh (0.2.0 baseline): 5 tests (including parent), 4 pass, 0 fail, 1 skip
 npm run test:install (0.2.0 baseline): 6 tests (including parent), 6 pass, 0 fail, 0 skip
 npm run build: PASS
 npm run test:web: PASS
 
-0.2.2 connection lifecycle regression observations:
+0.2.3 sandbox diagnostics regression observations:
+PASS remote SandboxUnavailableError through the official SSH provider is
+     de-duplicated and retains SANDBOX_UNAVAILABLE, mode and original cause
+PASS Host / remote failures have distinct execution locations
+PASS read-only preflight never spawns a project command or broadens policy;
+     partial enforcement remains partial; unresponsive probe has a deadline
+PASS remote sandbox failure keeps SSH and routed project file reads usable
+PASS probe API reports failure details without marking SSH offline
+PASS diagnostics stay out of persisted config and are refreshed on reconnect
+Uses published SSH sandbox provider/protocol with an in-memory transport and
+controlled backend replies. Does not certify a real remote sandbox or kernel.
+
+0.2.2 connection lifecycle regressions (rerun in 0.2.3):
 REPRODUCED before fix: overlapping native/plugin heartbeat makes Manager error
            with the exact "SSH helper pending request limit reached" message
 PASS one native heartbeat remains outstanding across UI checks; routed project
@@ -25,7 +37,7 @@ Uses published SshConnection/providers/SshRpcPeer and real Manager/FS routing.
 Only the SSH subprocess transport is replaced with in-memory streams; this is
 not a production sshd, FUSE mount or actual LLM conversation test.
 
-SSHFS regression observations (rerun in 0.2.2):
+SSHFS regression observations (rerun in 0.2.3):
 PASS actual SSHFS/FUSE parser reproduces rejected ForwardAgent=no
 PASS corrected arguments leave only the intentionally invalid probe option
      rejected; fuse_new fails before any mount or SSH connection attempt

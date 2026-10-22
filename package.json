@@ -1,6 +1,6 @@
 {
   "name": "dsh-ssh-workspaces",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Native DSH Web SSH workspaces with host plugins and skills, shared SSH execution and optional reverse tunnels",
   "type": "module",
   "license": "MIT",

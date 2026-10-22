@@ -2,7 +2,7 @@
 
 日期：2026-10-22。基线：DSH npm latest `0.2.1-rc.2`，官方 master `687f282e8625c6b8d11ff58211a90524be2e4317`。Node v24.19.0，Linux x64。
 
-插件版本：0.2.2。此次增量重跑 typecheck、build、unit/SSHFS 参数回归、连接生命周期回归和 Web smoke；真实加密 SSH 传输及 helper 安装结果沿用 0.2.0 的记录（安装/传输实现未修改）。
+插件版本：0.2.3。此次增量重跑 typecheck、build、unit/SSHFS 参数回归、连接生命周期/沙箱诊断回归和 Web smoke；真实加密 SSH 传输及 helper 安装结果沿用 0.2.0 的记录（安装/传输实现未修改）。新增沙箱预检使用真实官方 SSH provider/RPC framing 与内存传输测试，没有验证用户服务器的实际内核/容器能力。
 
 ## 已完成
 
@@ -10,7 +10,8 @@
 |---|---|
 | `npm run typecheck` | 严格 TypeScript 检查通过 |
 | `npm run build` | host ESM、browser 懒加载 CJS factory、声明文件生成通过 |
-| `npm test` | 32/32 通过；设置 `SSHFS_TEST_BINARY` 指向实际 SSHFS 3.7.3。默认从 PATH 查找，未安装时仅真实解析测试 skip。结果摘要保存在 `test-results.txt` |
+| `npm test` | 41/41 通过；设置 `SSHFS_TEST_BINARY` 指向实际 SSHFS 3.7.3。默认从 PATH 查找，未安装时仅真实解析测试 skip。结果摘要保存在 `test-results.txt` |
+| 沙箱诊断回归 | 官方 SSH provider 重复包装的错误可定位到远程；Host 故障单独显示。不可用时连接/项目指令读取仍可用、没有 process RPC；检查接口返回失败详情，断开清除诊断、重连重新检测；运行态诊断不写入严格配置。路由保留 `workspace-write`、`SANDBOX_UNAVAILABLE` 与原因链，不回退；只读预检保留 partial、超时有界 |
 | 首轮对话离线回归 | 使用真实 Manager、已发布的 SshConnection/SSH providers/RPC framing，SSH 子进程由内存流替代。修复前复现相同 pending request limit/error 状态；修复后验证慢心跳重叠时读取项目指令成功、128 个普通 RPC 满载不误报离线、真实流断开后拒绝访问与重连、慢状态检查不重叠及旧连接检查不污染重连 |
 | SSHFS 参数回归 | 真实 SSHFS 3.7.3 / libfuse 3.14.0 重现 `ForwardAgent=no` 错误；修复后只有有意添加的探针选项被拒绝，避免尝试挂载/连接。真实 OpenSSH `-G` 验证禁止 agent 转发、严格 host key、BatchMode、keepalive 以及 alias 的 HostName/User/Port/ProxyJump 保留 |
 | `npm run test:ssh` | 4 pass、1 skip（Node 统计包括父测试）；真实 OpenSSH client 与非特权 SSH2 fixture 完成加密连接、并行 cwd、反向 TCP SSE；Manager 连接失败后没有泄露可用 provider |

@@ -52,8 +52,16 @@ declare const zh: {
     readonly remove: "删除";
     readonly connect: "连接";
     readonly disconnect: "断开";
-    readonly probe: "检查连接";
+    readonly probe: "检查连接与沙箱";
     readonly noServers: "添加第一台服务器，然后连接并添加远程目录。";
+    readonly sandboxHost: "Host 沙箱";
+    readonly sandboxRemote: "远程沙箱";
+    readonly sandboxSelected: "已选择后端";
+    readonly sandboxUnavailable: "后端不可用";
+    readonly sandboxError: "检测失败";
+    readonly sandboxFull: "完整约束";
+    readonly sandboxPartial: "部分约束";
+    readonly sandboxHint: "这是只读后端预检，命令仍须通过运行时检查。Linux 需可用的 bubblewrap 或 Landlock；macOS 需 sandbox-exec。修复远程环境后断开重连；修复 Host 后重启 DSH。";
     readonly noWorkspaces: "此服务器还没有工作区。";
     readonly noSessions: "此工作区还没有对话。";
     readonly selectServer: "选择服务器";

@@ -15,6 +15,7 @@ import { discoverConfigHosts } from './ssh-config.js'
 import { sshfsArguments } from './sshfs.js'
 import { ensureHelper } from './helper-install.js'
 import type { SetupPhase } from './helper-bundle.js'
+import { checkSandbox, type SandboxChecks } from './sandbox-diagnostics.js'
 
 const run = promisify(execFile)
 const wait = (milliseconds: number): Promise<void> => new Promise(done => setTimeout(done, milliseconds))
@@ -22,7 +23,7 @@ const message = (error: unknown): string => error instanceof Error ? error.messa
 const missing = (error: unknown): boolean => error instanceof Error && 'code' in error && error.code === 'ENOENT'
 export type ServerStatus = 'disconnected' | 'connecting' | 'installing' | 'connected' | 'error'
 export type MountStatus = 'unmounted' | 'mounting' | 'mounted' | 'error'
-export type ServerView = ServerRecord & { status: ServerStatus; error?: string; setupPhase?: SetupPhase }
+export type ServerView = ServerRecord & { status: ServerStatus; error?: string; setupPhase?: SetupPhase; sandboxChecks?: SandboxChecks }
 export type WorkspaceView = WorkspaceRecord & { status: MountStatus; error?: string }
 export interface ManagerState { servers: ServerView[]; workspaces: WorkspaceView[] }
 export interface ManagerOptions {
@@ -101,9 +102,9 @@ export class SshWorkspaceManager {
   }
 
   /** Includes offline records so a stale conversation can never fall through to local execution. */
-  listMounts(): Array<{ serverId: string; localPath: string; remotePath: string; executableMap: Record<string, string>; hostExecutables: string[]; status: MountStatus }> {
+  listMounts(): Array<{ serverId: string; host?: string; localPath: string; remotePath: string; executableMap: Record<string, string>; hostExecutables: string[]; status: MountStatus }> {
     const live = [...this.workspaces.values()].map(workspace => ({
-      serverId: workspace.serverId, localPath: workspace.mountPath, remotePath: workspace.remotePath,
+      serverId: workspace.serverId, host: this.requireServer(workspace.serverId).host, localPath: workspace.mountPath, remotePath: workspace.remotePath,
       executableMap: this.requireServer(workspace.serverId).executableMap, hostExecutables: this.requireServer(workspace.serverId).hostExecutables, status: workspace.status,
     }))
     const retired = [...this.retiredMounts.values()].map(workspace => ({
@@ -210,13 +211,28 @@ export class SshWorkspaceManager {
     })
   }
 
-  probe(id: string): Promise<{ ok: boolean; message: string }> {
+  probe(id: string): Promise<{ ok: boolean; message: string; sandboxChecks: SandboxChecks }> {
     return this.enqueue(async () => {
       const remote = await this.connectInternal(id)
       const hello = await remote.ssh.ready
       const rg = await remote.subprocess.resolveExecutable('rg').catch(() => undefined)
-      return { ok: true, message: `${hello.platform}; Node ${hello.nodeVersion}; helper SHA-256 verified; ${rg ? `ripgrep: ${rg}` : 'ripgrep unavailable: install rg remotely for grep/glob'}` }
+      const server = this.requireServer(id)
+      const sandboxChecks = await this.checkSandboxes(server, remote)
+      server.sandboxChecks = sandboxChecks
+      const failures = Object.entries(sandboxChecks).filter(([, check]) => check.status !== 'selected')
+      return { ok: failures.length === 0, sandboxChecks,
+        message: `${hello.platform}; Node ${hello.nodeVersion}; helper SHA-256 verified; ${rg ? `ripgrep: ${rg}` : 'ripgrep unavailable: install rg remotely for grep/glob'}`
+          + (failures.length ? `; SSH connected, sandbox preflight failed: ${failures.map(([location]) => location).join(', ')}. See the server card for details.` : '; sandbox backend selection succeeded (runtime checks still apply)') }
     })
+  }
+
+  private async checkSandboxes(server: ServerView, remote: Remote): Promise<SandboxChecks> {
+    const [host, target] = await Promise.all([
+      checkSandbox(this.ctx.sandbox, this.options.stateDir, 'DSH Host'),
+      // Read-only: '/' is never granted workspace-write by a diagnostic.
+      checkSandbox(remote.sandbox, '/', `SSH server ${server.host}`),
+    ])
+    return { host, remote: target }
   }
 
   /** Teardown does not replay any interrupted operation. Sessions remain durable in DSH. */
@@ -276,7 +292,7 @@ export class SshWorkspaceManager {
   private async save(): Promise<void> {
     const data = {
       version: 1,
-      servers: [...this.servers.values()].map(({ status: _status, error: _error, setupPhase: _phase, ...server }) => server),
+      servers: [...this.servers.values()].map(({ status: _status, error: _error, setupPhase: _phase, sandboxChecks: _checks, ...server }) => server),
       workspaces: [...this.workspaces.values()].map(({ status: _status, error: _error, ...workspace }) => workspace),
       retiredMounts: [...this.retiredMounts.values()],
     }
@@ -314,6 +330,7 @@ export class SshWorkspaceManager {
     if (existing) await this.disconnectInternal(id)
     server.status = 'connecting'
     delete server.error
+    delete server.sandboxChecks
     let remote: Remote | undefined
     let fiber: Fiber | undefined
     try {
@@ -340,6 +357,8 @@ export class SshWorkspaceManager {
       await fiber
       if (remote === undefined) throw new Error('SSH helper failed to initialize; check its version, digest, and OpenSSH alias')
       if (server.tunnels.length > 0) remote.tunnel = await this.startTunnels(server)
+      // A missing sandbox is a tool capability failure, not an SSH disconnect.
+      server.sandboxChecks = await this.checkSandboxes(server, remote)
       this.remotes.set(id, remote)
       server.status = 'connected'
       const connected = remote
@@ -379,6 +398,7 @@ export class SshWorkspaceManager {
     server.status = 'disconnected'
     delete server.error
     delete server.setupPhase
+    delete server.sandboxChecks
     if (!remote) return
     if (remote.healthCheck) clearInterval(remote.healthCheck)
     if (remote.tunnel) await this.stopChild(remote.tunnel)

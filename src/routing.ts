@@ -4,9 +4,11 @@ import { fileURLToPath } from 'node:url';
 import type { Context } from '@deepseek-ai/cordis';
 import type { SubprocessRuntime, SubprocessSpawnSpec, SubprocessTerminalSpawnSpec } from '@deepseek-ai/dsh-subprocess';
 import type { SandboxProvider, SandboxPolicy } from '@deepseek-ai/dsh-sandbox';
+import { sandboxError } from './sandbox-diagnostics.js';
 
 export interface MountedWorkspace {
   readonly serverId: string;
+  readonly host?: string;
   readonly localPath: string;
   readonly remotePath: string;
   readonly status?: 'mounted' | 'unmounted' | 'mounting' | 'error';
@@ -255,19 +257,26 @@ export function installRouting(ctx: RoutingContext, manager: RoutingManager): ()
     if (!active) return Reflect.apply(confine, this, [argv, policy, signal]);
     const mount = findMount(policy.workspaceRoot, manager.listMounts());
     if (mount === undefined) {
-      const result = await Reflect.apply(confine, this, [argv, policy, signal]);
+      const result = await Reflect.apply(confine, this, [argv, policy, signal]).catch((error: unknown) => {
+        throw sandboxError(error, policy, `DSH Host (workspace ${policy.workspaceRoot})`);
+      });
       confinedRoutes.set(result.argv, { kind: 'host' });
       return result;
     }
     const provider = ready(mount);
     if (isHostRuntime(argv, mount.hostExecutables)) {
-      const result = await Reflect.apply(confine, this, [argv, policy, signal]);
+      const result = await Reflect.apply(confine, this, [argv, policy, signal]).catch((error: unknown) => {
+        throw sandboxError(error, policy, `DSH Host (PTC worker or hostExecutables exception for SSH server ${mount.host ?? mount.serverId})`);
+      });
       confinedRoutes.set(result.argv, { kind: 'host', exceptionServer: mount.serverId });
       return result;
     }
     const mapped = mapArgv(argv, mount);
     mapped[0] = await provider.subprocess.resolveExecutable(mapped[0]!, undefined, signal);
-    const result = await provider.sandbox.confine(mapped, { ...policy, workspaceRoot: mapPath(policy.workspaceRoot, mount) }, signal);
+    const remotePolicy = { ...policy, workspaceRoot: mapPath(policy.workspaceRoot, mount) };
+    const result = await provider.sandbox.confine(mapped, remotePolicy, signal).catch((error: unknown) => {
+      throw sandboxError(error, remotePolicy, `SSH server ${mount.host ?? mount.serverId} (remote workspace ${remotePolicy.workspaceRoot})`);
+    });
     confinedRoutes.set(result.argv, { kind: 'remote', mount, provider });
     return result;
   };

@@ -3,6 +3,7 @@ import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess';
 import type { SandboxProvider } from '@deepseek-ai/dsh-sandbox';
 export interface MountedWorkspace {
     readonly serverId: string;
+    readonly host?: string;
     readonly localPath: string;
     readonly remotePath: string;
     readonly status?: 'mounted' | 'unmounted' | 'mounting' | 'error';

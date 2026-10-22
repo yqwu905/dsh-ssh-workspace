@@ -4,12 +4,14 @@ import { SshSandboxProvider } from '@deepseek-ai/dsh-sandbox-ssh';
 import { SshFileSystem } from '@deepseek-ai/dsh-fs-ssh';
 import { type ServerRecord, type WorkspaceRecord } from './config.js';
 import type { SetupPhase } from './helper-bundle.js';
+import { type SandboxChecks } from './sandbox-diagnostics.js';
 export type ServerStatus = 'disconnected' | 'connecting' | 'installing' | 'connected' | 'error';
 export type MountStatus = 'unmounted' | 'mounting' | 'mounted' | 'error';
 export type ServerView = ServerRecord & {
     status: ServerStatus;
     error?: string;
     setupPhase?: SetupPhase;
+    sandboxChecks?: SandboxChecks;
 };
 export type WorkspaceView = WorkspaceRecord & {
     status: MountStatus;
@@ -58,6 +60,7 @@ export declare class SshWorkspaceManager {
     /** Includes offline records so a stale conversation can never fall through to local execution. */
     listMounts(): Array<{
         serverId: string;
+        host?: string;
         localPath: string;
         remotePath: string;
         executableMap: Record<string, string>;
@@ -77,7 +80,9 @@ export declare class SshWorkspaceManager {
     probe(id: string): Promise<{
         ok: boolean;
         message: string;
+        sandboxChecks: SandboxChecks;
     }>;
+    private checkSandboxes;
     /** Teardown does not replay any interrupted operation. Sessions remain durable in DSH. */
     dispose(): Promise<void>;
     private initialize;

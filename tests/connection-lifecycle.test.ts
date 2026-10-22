@@ -5,23 +5,34 @@ import { syncBuiltinESMExports } from 'node:module'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { setImmediate as turn } from 'node:timers/promises'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { LocalFileSystem } from '@deepseek-ai/dsh-fs-local'
 import { SshRpcPeer } from '@deepseek-ai/dsh-ssh/protocol'
+import { SandboxProvider, SandboxUnavailableError, type SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import { SshWorkspaceManager } from '../src/manager.js'
 import { installFsRouting } from '../src/fs-routing.js'
 
 /** Real published SshConnection, providers and RPC framing; only the SSH child
  * transport is replaced by in-memory streams, so no AF_UNIX/FUSE is required. */
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, options: { hostUnavailable?: boolean; remoteUnavailable?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-ssh-lifecycle-'))
   await writeFile(join(directory, 'AGENTS.md'), 'Remote project instructions')
   const host = new Context(), remote = new Context()
   await host.plugin(LocalFileSystem)
   await remote.plugin(LocalFileSystem)
+  let sandboxAvailable = !options.remoteUnavailable
+  const facts = (argv: readonly string[]) => ({ argv: ['/fixture/runner', ...argv], enforcement: 'full' as const, denialSignatures: [], runnerFailureRules: [] })
+  class HostSandbox extends SandboxProvider {
+    override async confine(argv: readonly string[], policy: SandboxPolicy) {
+      assert.equal(policy.mode, 'read-only')
+      if (options.hostUnavailable) throw new SandboxUnavailableError(policy.mode)
+      return facts(argv)
+    }
+  }
+  await host.plugin(HostSandbox)
   const heartbeatGate = Promise.withResolvers<void>(), readGate = Promise.withResolvers<void>(), monitorGate = Promise.withResolvers<void>()
   const sessions: Array<{ peer: SshRpcPeer; kill: () => void }> = []
   const methods: string[] = []
@@ -44,6 +55,12 @@ async function fixture(t: TestContext) {
       if (method === 'hello') return { protocol: 2, hash: 'a'.repeat(64), kind: 'executable', platform: 'linux',
         nodeVersion: process.version, executable: '/fixture/helper', root: directory, workspace: '/' }
       if (method === 'heartbeat') { await heartbeatGate.promise; return null }
+      if (method === 'sandbox') {
+        assert.equal(params.policy.mode, 'read-only')
+        if (!sandboxAvailable) throw new SandboxUnavailableError(params.policy.mode)
+        return facts(params.argv)
+      }
+      if (method === 'executable') return '/usr/bin/rg'
       if (method === 'terminal.environment') {
         if (heldMonitors) await monitorGate.promise
         return { platform: 'posix', defaultShell: '/bin/bash' }
@@ -80,6 +97,8 @@ async function fixture(t: TestContext) {
   const mount = { serverId: id, localPath: '/virtual-ssh-workspace', remotePath: directory, status: 'mounted' as const }
   restoreFs = installFsRouting(host, { listMounts: () => [mount], getRemote: value => manager.getRemote(value) })
   return { manager, id, methods, host, sessions, heartbeatGate, readGate,
+    setSandboxAvailable(value: boolean) { sandboxAvailable = value },
+    async savedState() { return JSON.parse(await readFile(join(directory, 'state/state.json'), 'utf8')) },
     holdReads() { heldReads = true },
     holdMonitors() { heldMonitors = true },
     releaseMonitors() { heldMonitors = false; monitorGate.resolve() },
@@ -90,6 +109,39 @@ async function fixture(t: TestContext) {
     },
   }
 }
+
+test('unavailable remote sandbox is visible before chat while SSH files remain usable', async t => {
+  const f = await fixture(t, { remoteUnavailable: true })
+  const server = f.manager.state().servers[0]!
+  assert.equal(server.status, 'connected')
+  assert.equal(server.sandboxChecks?.host.status, 'selected')
+  assert.equal(server.sandboxChecks?.remote.status, 'unavailable')
+  assert.match(server.sandboxChecks!.remote.message, /SSH server fixture/u)
+  assert.doesNotMatch(server.sandboxChecks!.remote.message, /Runner failure:/u)
+  assert.equal(await f.readProject(), 'Remote project instructions')
+  const result = await f.manager.probe(f.id)
+  assert.equal(result.ok, false)
+  assert.match(result.message, /SSH connected, sandbox preflight failed: remote/u)
+  assert.equal(f.manager.state().servers[0]!.status, 'connected')
+  assert.ok(!f.methods.some(method => method.startsWith('process.')))
+  // Ephemeral diagnostics must not enter the strict persisted-state schema.
+  await f.manager.upsertServer({ label: 'Another', host: 'another' })
+  assert.equal((await f.savedState()).servers[0].sandboxChecks, undefined)
+  await f.manager.disconnect(f.id)
+  assert.equal(f.manager.state().servers[0]!.sandboxChecks, undefined)
+  f.setSandboxAvailable(true)
+  await f.manager.connect(f.id)
+  assert.equal(f.manager.state().servers[0]!.sandboxChecks?.remote.status, 'selected')
+})
+
+test('Host-only sandbox failure is distinguished from remote capability', async t => {
+  const f = await fixture(t, { hostUnavailable: true })
+  const checks = f.manager.state().servers[0]!.sandboxChecks!
+  assert.equal(checks.host.status, 'unavailable')
+  assert.match(checks.host.message, /DSH Host/u)
+  assert.equal(checks.remote.status, 'selected')
+  assert.equal(await f.readProject(), 'Remote project instructions')
+})
 
 test('native heartbeat and manager monitoring overlap without taking the workspace offline', async t => {
   const f = await fixture(t)

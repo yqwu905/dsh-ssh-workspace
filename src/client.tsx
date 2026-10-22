@@ -11,6 +11,7 @@ import type { IWorkspaces, WorkspaceId } from '@deepseek-ai/dsh-api-workspace-co
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
+import type { SandboxChecks } from './sandbox-diagnostics.js'
 
 const NS = 'ssh-workspaces'
 const PANEL_ID = 'ssh-workspaces' as MainPanelId
@@ -34,7 +35,9 @@ const zh = {
   tunnelsHelp: '远程 127.0.0.1:remotePort → Host 的 host:port。模型请求默认由 Host 直接发送，无需隧道。',
   mapHelp: '例如 {"/usr/bin/bash":"/bin/bash"}，将 Host 的程序路径映射到远程程序路径。',
   save: '保存', cancel: '取消', edit: '编辑', remove: '删除', connect: '连接', disconnect: '断开',
-  probe: '检查连接', noServers: '添加第一台服务器，然后连接并添加远程目录。',
+  probe: '检查连接与沙箱', noServers: '添加第一台服务器，然后连接并添加远程目录。',
+  sandboxHost: 'Host 沙箱', sandboxRemote: '远程沙箱', sandboxSelected: '已选择后端', sandboxUnavailable: '后端不可用', sandboxError: '检测失败',
+  sandboxFull: '完整约束', sandboxPartial: '部分约束', sandboxHint: '这是只读后端预检，命令仍须通过运行时检查。Linux 需可用的 bubblewrap 或 Landlock；macOS 需 sandbox-exec。修复远程环境后断开重连；修复 Host 后重启 DSH。',
   noWorkspaces: '此服务器还没有工作区。', noSessions: '此工作区还没有对话。',
   selectServer: '选择服务器', selectedServer: '当前服务器', remotePath: '远程目录绝对路径', title: '工作区名称',
   addWorkspace: '添加工作区', mount: '挂载', unmount: '卸载', open: '打开', newSession: '新建对话',
@@ -76,7 +79,9 @@ const en: Record<keyof typeof zh, string> = {
   tunnelsHelp: 'Remote 127.0.0.1:remotePort → Host host:port. Model requests already run on the Host and need no tunnel.',
   mapHelp: 'For example {"/usr/bin/bash":"/bin/bash"} maps a Host executable path to its remote executable.',
   save: 'Save', cancel: 'Cancel', edit: 'Edit', remove: 'Delete', connect: 'Connect', disconnect: 'Disconnect',
-  probe: 'Probe connection', noServers: 'Add your first server, connect, then add a remote directory.',
+  probe: 'Check connection and sandbox', noServers: 'Add your first server, connect, then add a remote directory.',
+  sandboxHost: 'Host sandbox', sandboxRemote: 'Remote sandbox', sandboxSelected: 'Backend selected', sandboxUnavailable: 'Backend unavailable', sandboxError: 'Check failed',
+  sandboxFull: 'Full enforcement', sandboxPartial: 'Partial enforcement', sandboxHint: 'Read-only backend preflight; commands still require runtime enforcement. Linux needs usable bubblewrap or Landlock; macOS needs sandbox-exec. Reconnect after repairing the remote; restart DSH after repairing the Host.',
   noWorkspaces: 'This server has no workspaces yet.', noSessions: 'This workspace has no conversations yet.',
   selectServer: 'Select server', selectedServer: 'Selected server', remotePath: 'Remote directory absolute path', title: 'Workspace name',
   addWorkspace: 'Add workspace', mount: 'Mount', unmount: 'Unmount', open: 'Open', newSession: 'New conversation',
@@ -109,6 +114,7 @@ interface Server {
   id: string; label: string; host: string; helper?: string; helperHash?: string; helperMode?: 'auto' | 'manual'
   launch?: { kind: 'executable' } | { kind: 'node-script'; node: string; bootstrapPath?: string; bootstrapHash?: string }
   setupPhase?: 'detecting' | 'preparing' | 'uploading' | 'verifying'
+  sandboxChecks?: SandboxChecks
   status: string; error?: string; tunnels?: Tunnel[]; executableMap?: Record<string, string>; hostExecutables?: string[]
 }
 interface Workspace {
@@ -145,12 +151,21 @@ async function request(t: T, path: string, method = 'GET', body?: object, signal
   return payload
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
+function validSandboxChecks(value: unknown): boolean {
+  return isRecord(value) && ['host', 'remote'].every(key => {
+    const check = value[key]
+    return isRecord(check) && ['selected', 'unavailable', 'error'].includes(String(check.status)) && typeof check.message === 'string'
+      && (check.backend === undefined || typeof check.backend === 'string')
+      && (check.enforcement === undefined || check.enforcement === 'full' || check.enforcement === 'partial')
+  })
+}
 function readState(value: unknown, t: T): State {
   if (!isRecord(value) || !Array.isArray(value.servers) || !Array.isArray(value.workspaces)) throw new Error(t('invalidResponse'))
   const servers = value.servers.map((row: unknown): Server => {
     if (!isRecord(row) || !['id', 'label', 'host', 'status'].every(k => typeof row[k] === 'string')
       || (row.launch !== undefined && (!isRecord(row.launch) || !['executable', 'node-script'].includes(String(row.launch.kind))
-      || (row.launch.kind === 'node-script' && typeof row.launch.node !== 'string')))) throw new Error(t('invalidResponse'))
+      || (row.launch.kind === 'node-script' && typeof row.launch.node !== 'string')))
+      || (row.sandboxChecks !== undefined && !validSandboxChecks(row.sandboxChecks))) throw new Error(t('invalidResponse'))
     return row as object as Server
   })
   const workspaces = value.workspaces.map((row: unknown): Workspace => {
@@ -194,6 +209,24 @@ function Badge({ status, t }: { status: string; t: T }) {
   const key = known.find(k => k === status)
   const healthy = status === 'connected' || status === 'mounted' || status === 'ready'
   return <span style={{ ...s.badge, ...(healthy ? { color: '#19704b', background: '#e5f4ec' } : {}) }}>{key ? t(key) : status || t('unknown')}</span>
+}
+
+function SandboxStatus({ checks, t }: { checks: SandboxChecks; t: T }) {
+  return <div style={{ ...s.item, marginBottom: 12 }}>
+    {(['host', 'remote'] as const).map(location => {
+      const check = checks[location]
+      return <div key={location} style={s.muted}>
+        <strong>{t(location === 'host' ? 'sandboxHost' : 'sandboxRemote')}: </strong>
+        <span style={{ color: check.status === 'selected' && check.enforcement === 'full' ? '#19704b' : '#a26013' }}>
+          {t(check.status === 'selected' ? 'sandboxSelected' : check.status === 'unavailable' ? 'sandboxUnavailable' : 'sandboxError')}
+          {check.backend && ` · ${check.backend}`}
+          {check.enforcement && ` · ${t(check.enforcement === 'full' ? 'sandboxFull' : 'sandboxPartial')}`}
+        </span>
+        {check.status !== 'selected' && <details><summary>{t('inspectDetails')}</summary><p style={s.code}>{check.message}</p></details>}
+      </div>
+    })}
+    <p style={s.muted}>{t('sandboxHint')}</p>
+  </div>
 }
 
 function ServerEditor({ server, t, busy, save, close }: { server?: Server; t: T; busy: boolean; save(value: object): Promise<void>; close(): void }) {
@@ -373,14 +406,16 @@ function Page(props: PageProps) {
           <p style={s.code}>{server.host}</p>
           {server.setupPhase && <p role="status" aria-live="polite" style={s.muted}>{t(server.setupPhase)}</p>}
           {server.error && <p role="alert" style={{ ...s.muted, color: '#b43c3c' }}>{server.error}</p>}
+          {server.sandboxChecks && <SandboxStatus checks={server.sandboxChecks} t={t} />}
           <div style={s.buttons}>
             {server.status === 'connected' || server.status === 'ready' ? <Button disabled={busy} onClick={() => act(`/servers/${encodeURIComponent(server.id)}/disconnect`)}>{t('disconnect')}</Button>
               : <Button primary disabled={busy || ['connecting', 'installing'].includes(server.status)} onClick={() => act(`/servers/${encodeURIComponent(server.id)}/connect`)}>{t('connect')}</Button>}
             <Button disabled={busy || ['connecting', 'installing'].includes(server.status)} onClick={() => { void run(async () => {
               const result = await request(t, `/servers/${encodeURIComponent(server.id)}/probe`, 'POST', undefined, lifetime.current?.signal)
               if (!isRecord(result) || typeof result.message !== 'string') throw new Error(t('invalidResponse'))
+              await refresh()
               if (result.ok === false) throw new Error(result.message)
-              setNotice(result.message); await refresh()
+              setNotice(result.message)
             }) }}>{t('probe')}</Button>
             <Button disabled={busy || ['connecting', 'installing', 'connected'].includes(server.status)} onClick={() => setEditor(server)}>{t('edit')}</Button>
             <Button disabled={busy || ['connecting', 'installing'].includes(server.status)} onClick={() => { if (window.confirm(t('deleteServerConfirm'))) act(`/servers/${encodeURIComponent(server.id)}`, 'DELETE') }}>{t('remove')}</Button>

@@ -1,6 +1,6 @@
 # DSH SSH Workspaces
 
-面向 **DeepSeek Harness 0.2.1-rc.2** 的 Web 插件。2026-10-22 核对 npm `latest` 与官方源码，基线提交为 `687f282e8625c6b8d11ff58211a90524be2e4317`。当前为 **0.2.2 测试版**；完整真实 SSHFS 挂载验收仍需要具有 FUSE 权限的机器，详见 [测试记录](docs/validation.md)。
+面向 **DeepSeek Harness 0.2.1-rc.2** 的 Web 插件。2026-10-22 核对 npm `latest` 与官方源码，基线提交为 `687f282e8625c6b8d11ff58211a90524be2e4317`。当前为 **0.2.3 测试版**；完整真实 SSHFS 挂载验收仍需要具有 FUSE 权限的机器，详见 [测试记录](docs/validation.md)。
 
 一个 host 运行 dsh、现有插件、skills、模型连接和会话存储；远程服务器提供目录、计算环境、GPU/NPU 和终端。插件不复制一套完整 dsh 到每台服务器。
 
@@ -28,7 +28,7 @@ sudo apt-get install sshfs
 dsh --version
 
 # 交付包 release/ 下有预构建安装包，不必先构建源码
-dsh plugin --profile web add /absolute/path/dsh-ssh-workspaces/release/dsh-ssh-workspaces-0.2.2.tgz
+dsh plugin --profile web add /absolute/path/dsh-ssh-workspaces/release/dsh-ssh-workspaces-0.2.3.tgz
 dsh web
 ```
 
@@ -93,6 +93,14 @@ Conda 可用 `conda run -n ENV python train.py`（必要时指定远程 conda �
 0.2.2 只保留官方连接的心跳；Web 状态检查改用只读的 `terminal.environment` 查询（不会创建终端或启动命令），同一连接最多一个检查在途。普通 RPC 暂时满载时跳过这一轮检查，不标离线、不重放业务操作；真实传输故障仍会标为 error 并阻止本地回退。
 
 恢复步骤：更新插件到 0.2.2，重启 DSH Web；在 SSH 工作区面板重新连接服务器、挂载原 workspace，然后重试原对话。已有服务器配置、workspace 注册、历史对话和远程项目可保留；无需删除 helper 或修改 SSH config。
+
+### 聊天正常，但命令报 sandbox mode workspace-write 无可用后端
+
+SSH 连接和模型请求成功，不代表执行命令的机器具备进程沙箱。自动 Helper 已包含 Landlock 启动器，但内核、容器限制和系统 bubblewrap 仍决定沙箱能否工作；SSHFS 不提供这项能力。
+
+0.2.3 在连接时预检 Host 与远程后端，**检查连接与沙箱** 和服务器卡片分别展示两端结果。命令错误标明实际执行位置，保留 `SANDBOX_UNAVAILABLE` 并去掉重复包装；不会改策略或回退到 Host 执行。只读预检不启动项目命令，“已选择后端”仍需每条命令通过运行时检查。
+
+在报错机器安装/启用可用的 bubblewrap 或 Landlock；容器权限受限时需由部署者处理。修复远程后断开重连，修复 Host 后重启 DSH。具体定位、离线机器处理及显式无沙箱部署选项见 [沙箱故障恢复](docs/sandbox.md)。仅升级插件补齐诊断，**不能替服务器补上内核能力**。
 
 ## 继承插件和 skills 的含义
 
